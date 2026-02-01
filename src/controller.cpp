@@ -1,0 +1,565 @@
+#include "controller.h"
+#include <QSplitter>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QMenu>
+#include <QInputDialog>
+#include <QClipboard>
+#include <QApplication>
+
+namespace rcx {
+
+// ── RcxDocument ──
+
+RcxDocument::RcxDocument(QObject* parent)
+    : QObject(parent)
+    , provider(std::make_unique<NullProvider>())
+{
+    connect(&undoStack, &QUndoStack::cleanChanged, this, [this](bool clean) {
+        modified = !clean;
+    });
+}
+
+ComposeResult RcxDocument::compose() const {
+    return rcx::compose(tree, *provider);
+}
+
+bool RcxDocument::save(const QString& path) {
+    QJsonObject json = tree.toJson();
+    QJsonDocument jdoc(json);
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    file.write(jdoc.toJson(QJsonDocument::Indented));
+    filePath = path;
+    undoStack.setClean();
+    modified = false;
+    return true;
+}
+
+bool RcxDocument::load(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    undoStack.clear();
+    QJsonDocument jdoc = QJsonDocument::fromJson(file.readAll());
+    tree = NodeTree::fromJson(jdoc.object());
+    filePath = path;
+    modified = false;
+    emit documentChanged();
+    return true;
+}
+
+void RcxDocument::loadData(const QString& binaryPath) {
+    QFile file(binaryPath);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    undoStack.clear();
+    provider = std::make_unique<FileProvider>(file.readAll());
+    tree.baseAddress = 0;
+    emit documentChanged();
+}
+
+void RcxDocument::loadData(const QByteArray& data) {
+    undoStack.clear();
+    provider = std::make_unique<FileProvider>(data);
+    tree.baseAddress = 0;
+    emit documentChanged();
+}
+
+// ── RcxCommand ──
+
+RcxCommand::RcxCommand(RcxController* ctrl, Command cmd)
+    : m_ctrl(ctrl), m_cmd(cmd) {}
+
+void RcxCommand::undo() { m_ctrl->applyCommand(m_cmd, true); }
+void RcxCommand::redo() { m_ctrl->applyCommand(m_cmd, false); }
+
+// ── RcxController ──
+
+RcxController::RcxController(RcxDocument* doc, QWidget* parent)
+    : QObject(parent), m_doc(doc)
+{
+    connect(m_doc, &RcxDocument::documentChanged, this, &RcxController::refresh);
+}
+
+RcxEditor* RcxController::primaryEditor() const {
+    return m_editors.isEmpty() ? nullptr : m_editors.first();
+}
+
+RcxEditor* RcxController::addSplitEditor(QSplitter* splitter) {
+    auto* editor = new RcxEditor(splitter);
+    splitter->addWidget(editor);
+    m_editors.append(editor);
+    connectEditor(editor);
+
+    if (!m_lastResult.text.isEmpty()) {
+        editor->applyDocument(m_lastResult);
+    }
+    return editor;
+}
+
+void RcxController::removeSplitEditor(RcxEditor* editor) {
+    m_editors.removeOne(editor);
+    editor->deleteLater();
+}
+
+void RcxController::connectEditor(RcxEditor* editor) {
+    connect(editor, &RcxEditor::marginClicked,
+            this, [this, editor](int margin, int line, Qt::KeyboardModifiers mods) {
+        handleMarginClick(editor, margin, line, mods);
+    });
+    connect(editor, &RcxEditor::contextMenuRequested,
+            this, [this, editor](int line, int nodeIdx, int subLine, QPoint globalPos) {
+        showContextMenu(editor, line, nodeIdx, subLine, globalPos);
+    });
+    connect(editor, &RcxEditor::nodeClicked,
+            this, [this, editor](int line, uint64_t nodeId, Qt::KeyboardModifiers mods) {
+        handleNodeClick(editor, line, nodeId, mods);
+    });
+
+    // Inline editing signals
+    connect(editor, &RcxEditor::inlineEditCommitted,
+            this, [this](int nodeIdx, int subLine, EditTarget target, const QString& text) {
+        if (nodeIdx < 0) { refresh(); return; }
+        switch (target) {
+        case EditTarget::Name:
+            if (!text.isEmpty()) renameNode(nodeIdx, text);
+            break;
+        case EditTarget::Type: {
+            bool ok;
+            NodeKind k = kindFromTypeName(text, &ok);
+            if (ok) changeNodeKind(nodeIdx, k);
+            break;
+        }
+        case EditTarget::Value:
+            setNodeValue(nodeIdx, subLine, text);
+            break;
+        }
+        // Always refresh to restore canonical text (handles parse failures, no-ops, etc.)
+        refresh();
+    });
+    connect(editor, &RcxEditor::inlineEditCancelled,
+            this, [this]() { refresh(); });
+}
+
+void RcxController::refresh() {
+    m_lastResult = m_doc->compose();
+
+    // Prune stale selections (nodes removed by undo/redo/delete)
+    QSet<uint64_t> valid;
+    for (uint64_t id : m_selIds) {
+        if (m_doc->tree.indexOfId(id) >= 0)
+            valid.insert(id);
+    }
+    m_selIds = valid;
+
+    for (auto* editor : m_editors) {
+        ViewState vs = editor->saveViewState();
+        editor->applyDocument(m_lastResult);
+        editor->restoreViewState(vs);
+    }
+    applySelectionOverlays();
+}
+
+void RcxController::changeNodeKind(int nodeIdx, NodeKind newKind) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    auto& node = m_doc->tree.nodes[nodeIdx];
+
+    int oldSize = node.byteSize();
+    // Compute what byteSize() would be with the new kind
+    Node tmp = node;
+    tmp.kind = newKind;
+    int newSize = tmp.byteSize();
+    int delta = newSize - oldSize;
+
+    QVector<cmd::OffsetAdj> adjs;
+    if (delta != 0 && oldSize > 0 && newSize > 0) {
+        int oldEnd = node.offset + oldSize;
+        auto siblings = m_doc->tree.childrenOf(node.parentId);
+        for (int si : siblings) {
+            if (si == nodeIdx) continue;
+            auto& sib = m_doc->tree.nodes[si];
+            if (sib.offset >= oldEnd)
+                adjs.append({sib.id, sib.offset, sib.offset + delta});
+        }
+    }
+
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::ChangeKind{node.id, node.kind, newKind, adjs}));
+}
+
+void RcxController::renameNode(int nodeIdx, const QString& newName) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    auto& node = m_doc->tree.nodes[nodeIdx];
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::Rename{node.id, node.name, newName}));
+}
+
+void RcxController::insertNode(uint64_t parentId, int offset, NodeKind kind, const QString& name) {
+    Node n;
+    n.kind     = kind;
+    n.name     = name;
+    n.parentId = parentId;
+
+    if (offset < 0) {
+        // Auto-place after last sibling with alignment
+        int maxEnd = 0;
+        auto siblings = m_doc->tree.childrenOf(parentId);
+        for (int si : siblings) {
+            auto& sn = m_doc->tree.nodes[si];
+            int sz  = (sn.kind == NodeKind::Struct || sn.kind == NodeKind::Array)
+                ? m_doc->tree.structSpan(sn.id) : sn.byteSize();
+            int end = sn.offset + sz;
+            if (end > maxEnd) maxEnd = end;
+        }
+        int align = alignmentFor(kind);
+        n.offset = (maxEnd + align - 1) / align * align;
+    } else {
+        n.offset = offset;
+    }
+
+    // Assign ID before storing
+    n.id = m_doc->tree.m_nextId;
+
+    m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n}));
+}
+
+void RcxController::removeNode(int nodeIdx) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    uint64_t nodeId = m_doc->tree.nodes[nodeIdx].id;
+
+    QVector<int> indices = m_doc->tree.subtreeIndices(nodeId);
+    QVector<Node> subtree;
+    for (int i : indices)
+        subtree.append(m_doc->tree.nodes[i]);
+
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::Remove{nodeId, subtree}));
+}
+
+void RcxController::toggleCollapse(int nodeIdx) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    auto& node = m_doc->tree.nodes[nodeIdx];
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::Collapse{node.id, node.collapsed, !node.collapsed}));
+}
+
+void RcxController::applyCommand(const Command& command, bool isUndo) {
+    auto& tree = m_doc->tree;
+
+    std::visit([&](auto&& c) {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, cmd::ChangeKind>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].kind = isUndo ? c.oldKind : c.newKind;
+            for (const auto& adj : c.offAdjs) {
+                int ai = tree.indexOfId(adj.nodeId);
+                if (ai >= 0)
+                    tree.nodes[ai].offset = isUndo ? adj.oldOffset : adj.newOffset;
+            }
+        } else if constexpr (std::is_same_v<T, cmd::Rename>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].name = isUndo ? c.oldName : c.newName;
+        } else if constexpr (std::is_same_v<T, cmd::Collapse>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].collapsed = isUndo ? c.oldState : c.newState;
+        } else if constexpr (std::is_same_v<T, cmd::Insert>) {
+            if (isUndo) {
+                int idx = tree.indexOfId(c.node.id);
+                if (idx >= 0) {
+                    tree.nodes.remove(idx);
+                    tree.invalidateIdCache();
+                }
+            } else {
+                tree.addNode(c.node);
+            }
+        } else if constexpr (std::is_same_v<T, cmd::Remove>) {
+            if (isUndo) {
+                for (const Node& n : c.subtree)
+                    tree.addNode(n);
+            } else {
+                QVector<int> indices = tree.subtreeIndices(c.nodeId);
+                std::sort(indices.begin(), indices.end(), std::greater<int>());
+                for (int idx : indices)
+                    tree.nodes.remove(idx);
+                tree.invalidateIdCache();
+            }
+        } else if constexpr (std::is_same_v<T, cmd::ChangeBase>) {
+            tree.baseAddress = isUndo ? c.oldBase : c.newBase;
+        } else if constexpr (std::is_same_v<T, cmd::WriteBytes>) {
+            const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
+            m_doc->provider->writeBytes(c.addr, bytes);
+        }
+    }, command);
+
+    refresh();
+}
+
+void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    if (!m_doc->provider->isWritable()) return;
+
+    const Node& node = m_doc->tree.nodes[nodeIdx];
+    uint64_t addr = m_doc->tree.computeOffset(nodeIdx);
+
+    // For vector sub-components, redirect to float parsing at sub-offset
+    NodeKind editKind = node.kind;
+    if ((node.kind == NodeKind::Vec2 || node.kind == NodeKind::Vec3 ||
+         node.kind == NodeKind::Vec4) && subLine >= 0) {
+        addr += subLine * 4;
+        editKind = NodeKind::Float;
+    }
+
+    bool ok;
+    QByteArray newBytes = fmt::parseValue(editKind, text, &ok);
+    if (!ok) return;
+
+    // For strings, pad/truncate to full buffer size
+    if (node.kind == NodeKind::UTF8 || node.kind == NodeKind::UTF16) {
+        int fullSize = node.byteSize();
+        newBytes = newBytes.left(fullSize);
+        if (newBytes.size() < fullSize)
+            newBytes.append(QByteArray(fullSize - newBytes.size(), '\0'));
+    }
+
+    if (newBytes.isEmpty()) return;
+
+    int writeSize = newBytes.size();
+
+    // Validate write range before pushing command
+    if (!m_doc->provider->isReadable(addr, writeSize)) return;
+
+    QByteArray oldBytes = m_doc->provider->readBytes(addr, writeSize);
+
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::WriteBytes{addr, oldBytes, newBytes}));
+}
+
+void RcxController::duplicateNode(int nodeIdx) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    const Node& src = m_doc->tree.nodes[nodeIdx];
+    if (src.kind == NodeKind::Struct || src.kind == NodeKind::Array) return;
+    insertNode(src.parentId, src.offset + src.byteSize(), src.kind, src.name + "_copy");
+}
+
+void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
+                                     int subLine, const QPoint& globalPos) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    uint64_t clickedId = m_doc->tree.nodes[nodeIdx].id;
+
+    // Right-click selection policy: if not in selection, select only this node
+    if (!m_selIds.contains(clickedId)) {
+        m_selIds.clear();
+        m_selIds.insert(clickedId);
+        m_anchorLine = line;
+        applySelectionOverlays();
+    }
+
+    // Multi-select batch menu
+    if (m_selIds.size() > 1) {
+        QMenu menu;
+        int count = m_selIds.size();
+        QSet<uint64_t> ids = m_selIds;
+        menu.addAction(QString("Delete %1 nodes").arg(count), [this, ids]() {
+            QVector<int> indices;
+            for (uint64_t id : ids) {
+                int idx = m_doc->tree.indexOfId(id);
+                if (idx >= 0) indices.append(idx);
+            }
+            batchRemoveNodes(indices);
+        });
+        menu.addAction(QString("Change type of %1 nodes...").arg(count),
+                       [this, ids]() {
+            QStringList types;
+            for (const auto& e : kKindMeta) types << e.name;
+            bool ok;
+            QString sel = QInputDialog::getItem(nullptr, "Change Type", "Type:",
+                                                types, 0, false, &ok);
+            if (ok) {
+                QVector<int> indices;
+                for (uint64_t id : ids) {
+                    int idx = m_doc->tree.indexOfId(id);
+                    if (idx >= 0) indices.append(idx);
+                }
+                batchChangeKind(indices, kindFromString(sel));
+            }
+        });
+        menu.exec(globalPos);
+        return;
+    }
+
+    const Node& node = m_doc->tree.nodes[nodeIdx];
+    uint64_t nodeId = node.id;
+    uint64_t parentId = node.parentId;
+
+    QMenu menu;
+
+    // Inline edit actions — position cursor on the right-clicked line
+    bool isEditable = node.kind != NodeKind::Struct && node.kind != NodeKind::Array
+                      && node.kind != NodeKind::Padding && node.kind != NodeKind::Mat4x4
+                      && m_doc->provider->isWritable();
+    if (isEditable) {
+        menu.addAction("Edit &Value", [editor, line]() {
+            editor->beginInlineEdit(EditTarget::Value, line);
+        });
+    }
+
+    menu.addAction("Re&name", [editor, line]() {
+        editor->beginInlineEdit(EditTarget::Name, line);
+    });
+
+    menu.addAction("Change &Type", [editor, line]() {
+        editor->beginInlineEdit(EditTarget::Type, line);
+    });
+
+    menu.addSeparator();
+
+    menu.addAction("&Add Field Below", [this, parentId]() {
+        insertNode(parentId, -1, NodeKind::Hex64, "newField");
+    });
+
+    if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) {
+        menu.addAction("Add &Child", [this, nodeId]() {
+            insertNode(nodeId, 0, NodeKind::Hex64, "newField");
+        });
+        QString colText = node.collapsed ? "&Expand" : "&Collapse";
+        menu.addAction(colText, [this, nodeId]() {
+            int ni = m_doc->tree.indexOfId(nodeId);
+            if (ni >= 0) toggleCollapse(ni);
+        });
+    }
+
+    menu.addAction("D&uplicate", [this, nodeId]() {
+        int ni = m_doc->tree.indexOfId(nodeId);
+        if (ni >= 0) duplicateNode(ni);
+    });
+    menu.addAction("&Delete", [this, nodeId]() {
+        int ni = m_doc->tree.indexOfId(nodeId);
+        if (ni >= 0) removeNode(ni);
+    });
+
+    menu.addSeparator();
+
+    menu.addAction("Copy &Address", [this, nodeId]() {
+        int ni = m_doc->tree.indexOfId(nodeId);
+        if (ni < 0) return;
+        uint64_t addr = m_doc->tree.baseAddress + m_doc->tree.computeOffset(ni);
+        QApplication::clipboard()->setText(
+            QStringLiteral("0x") + QString::number(addr, 16).toUpper());
+    });
+
+    menu.addAction("Copy &Offset", [this, nodeId]() {
+        int ni = m_doc->tree.indexOfId(nodeId);
+        if (ni < 0) return;
+        int off = m_doc->tree.nodes[ni].offset;
+        QApplication::clipboard()->setText(
+            QStringLiteral("+0x") + QString::number(off, 16).toUpper().rightJustified(4, '0'));
+    });
+
+    menu.exec(globalPos);
+}
+
+void RcxController::batchRemoveNodes(const QVector<int>& nodeIndices) {
+    QSet<uint64_t> idSet;
+    for (int idx : nodeIndices) {
+        if (idx >= 0 && idx < m_doc->tree.nodes.size())
+            idSet.insert(m_doc->tree.nodes[idx].id);
+    }
+    idSet = m_doc->tree.normalizePreferAncestors(idSet);
+    if (idSet.isEmpty()) return;
+    m_doc->undoStack.beginMacro(QString("Delete %1 nodes").arg(idSet.size()));
+    for (uint64_t id : idSet) {
+        int idx = m_doc->tree.indexOfId(id);
+        if (idx >= 0) removeNode(idx);
+    }
+    m_doc->undoStack.endMacro();
+}
+
+void RcxController::batchChangeKind(const QVector<int>& nodeIndices, NodeKind newKind) {
+    QSet<uint64_t> idSet;
+    for (int idx : nodeIndices) {
+        if (idx >= 0 && idx < m_doc->tree.nodes.size())
+            idSet.insert(m_doc->tree.nodes[idx].id);
+    }
+    idSet = m_doc->tree.normalizePreferDescendants(idSet);
+    if (idSet.isEmpty()) return;
+    m_doc->undoStack.beginMacro(QString("Change type of %1 nodes").arg(idSet.size()));
+    for (uint64_t id : idSet) {
+        int idx = m_doc->tree.indexOfId(id);
+        if (idx >= 0) changeNodeKind(idx, newKind);
+    }
+    m_doc->undoStack.endMacro();
+}
+
+void RcxController::handleNodeClick(RcxEditor* source, int line,
+                                     uint64_t nodeId,
+                                     Qt::KeyboardModifiers mods) {
+    bool ctrl  = mods & Qt::ControlModifier;
+    bool shift = mods & Qt::ShiftModifier;
+
+    if (!ctrl && !shift) {
+        m_selIds.clear();
+        m_selIds.insert(nodeId);
+        m_anchorLine = line;
+    } else if (ctrl && !shift) {
+        if (m_selIds.contains(nodeId))
+            m_selIds.remove(nodeId);
+        else
+            m_selIds.insert(nodeId);
+        m_anchorLine = line;
+    } else if (shift && !ctrl) {
+        m_selIds.clear();
+        int from = qMin(m_anchorLine, line);
+        int to   = qMax(m_anchorLine, line);
+        for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
+            uint64_t nid = m_lastResult.meta[i].nodeId;
+            if (nid != 0) m_selIds.insert(nid);
+        }
+    } else { // Ctrl+Shift
+        int from = qMin(m_anchorLine, line);
+        int to   = qMax(m_anchorLine, line);
+        for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
+            uint64_t nid = m_lastResult.meta[i].nodeId;
+            if (nid != 0) m_selIds.insert(nid);
+        }
+    }
+
+    applySelectionOverlays();
+
+    if (m_selIds.size() == 1) {
+        uint64_t sid = *m_selIds.begin();
+        int idx = m_doc->tree.indexOfId(sid);
+        if (idx >= 0) emit nodeSelected(idx);
+    }
+}
+
+void RcxController::clearSelection() {
+    m_selIds.clear();
+    m_anchorLine = -1;
+    applySelectionOverlays();
+}
+
+void RcxController::applySelectionOverlays() {
+    for (auto* editor : m_editors)
+        editor->applySelectionOverlay(m_selIds);
+}
+
+void RcxController::handleMarginClick(RcxEditor* editor, int margin,
+                                       int line, Qt::KeyboardModifiers) {
+    const LineMeta* lm = editor->metaForLine(line);
+    if (!lm) return;
+
+    if (lm->foldHead && (margin == 0 || margin == 1)) {
+        toggleCollapse(lm->nodeIdx);
+    } else if (margin == 0 || margin == 1) {
+        emit nodeSelected(lm->nodeIdx);
+    }
+}
+
+} // namespace rcx
