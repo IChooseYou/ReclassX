@@ -64,6 +64,10 @@ private:
     uint64_t m_hoveredNodeId = 0;
     QSet<uint64_t> m_currentSelIds;
 
+    // ── Drag selection ──
+    bool m_dragging = false;
+    int  m_dragLastLine = -1;
+
     // ── Inline edit state ──
     struct InlineEditState {
         bool       active    = false;
