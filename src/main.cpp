@@ -12,10 +12,13 @@
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QAction>
+#include <QActionGroup>
 #include <QMap>
 #include <QTimer>
 #include <QDir>
 #include <QMetaObject>
+#include <QFontDatabase>
+#include <QSettings>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -115,6 +118,7 @@ private slots:
     void undo();
     void redo();
     void about();
+    void setEditorFont(const QString& fontName);
 
 private:
     QMdiArea* m_mdiArea;
@@ -175,6 +179,23 @@ void MainWindow::createMenus() {
     auto* view = menuBar()->addMenu("&View");
     view->addAction("Split &Horizontal", this, &MainWindow::splitView);
     view->addAction("&Unsplit",          this, &MainWindow::unsplitView);
+    view->addSeparator();
+    auto* fontMenu = view->addMenu("&Font");
+    auto* fontGroup = new QActionGroup(this);
+    fontGroup->setExclusive(true);
+    auto* actConsolas = fontMenu->addAction("Consolas");
+    actConsolas->setCheckable(true);
+    actConsolas->setActionGroup(fontGroup);
+    auto* actIosevka = fontMenu->addAction("Iosevka");
+    actIosevka->setCheckable(true);
+    actIosevka->setActionGroup(fontGroup);
+    // Load saved preference
+    QSettings settings("ReclassX", "ReclassX");
+    QString savedFont = settings.value("font", "Consolas").toString();
+    if (savedFont == "Iosevka") actIosevka->setChecked(true);
+    else actConsolas->setChecked(true);
+    connect(actConsolas, &QAction::triggered, this, [this]() { setEditorFont("Consolas"); });
+    connect(actIosevka, &QAction::triggered, this, [this]() { setEditorFont("Iosevka"); });
 
     // Node
     auto* node = menuBar()->addMenu("&Node");
@@ -548,6 +569,15 @@ void MainWindow::about() {
         "fold markers, and status flags.");
 }
 
+void MainWindow::setEditorFont(const QString& fontName) {
+    QSettings settings("ReclassX", "ReclassX");
+    settings.setValue("font", fontName);
+    // Notify all controllers to refresh fonts
+    for (auto& state : m_tabs) {
+        state.ctrl->setEditorFont(fontName);
+    }
+}
+
 RcxController* MainWindow::activeController() const {
     auto* sub = m_mdiArea->activeSubWindow();
     if (sub && m_tabs.contains(sub))
@@ -589,6 +619,18 @@ int main(int argc, char* argv[]) {
     app.setOrganizationName("ReclassX");
     app.setStyle("Fusion"); // Fusion style respects dark palette well
 
+    // Load embedded Iosevka font
+    int fontId = QFontDatabase::addApplicationFont(":/fonts/Iosevka-Regular.ttf");
+    if (fontId == -1)
+        qWarning("Failed to load embedded Iosevka font");
+
+    // Apply saved font preference before creating any editors
+    {
+        QSettings settings("ReclassX", "ReclassX");
+        QString savedFont = settings.value("font", "Consolas").toString();
+        rcx::RcxEditor::setGlobalFontName(savedFont);
+    }
+
     // Global dark palette
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window,          QColor("#1e1e1e"));
@@ -611,7 +653,7 @@ int main(int argc, char* argv[]) {
 
     bool screenshotMode = app.arguments().contains("--screenshot");
     if (screenshotMode)
-        window.setAttribute(Qt::WA_DontShowOnScreen);
+        window.setWindowOpacity(0.0);
     window.show();
 
     // Always auto-open PE header demo on startup
@@ -623,10 +665,10 @@ int main(int argc, char* argv[]) {
         if (idx + 1 < app.arguments().size())
             out = app.arguments().at(idx + 1);
 
-        QTimer::singleShot(1000, [&window, &app, out]() {
+        QTimer::singleShot(1000, [&window, out]() {
             QDir().mkpath(QFileInfo(out).absolutePath());
             window.grab().save(out);
-            app.quit();
+            ::_exit(0);  // immediate exit — no need for clean shutdown in screenshot mode
         });
     }
 

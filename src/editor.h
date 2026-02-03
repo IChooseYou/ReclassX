@@ -37,6 +37,8 @@ public:
     void cancelInlineEdit();
 
     void applySelectionOverlay(const QSet<uint64_t>& selIds);
+    void setEditorFont(const QString& fontName);
+    static void setGlobalFontName(const QString& fontName);
 
 signals:
     void marginClicked(int margin, int line, Qt::KeyboardModifiers mods);
@@ -63,10 +65,17 @@ private:
     bool   m_cursorOverridden = false;
     uint64_t m_hoveredNodeId = 0;
     QSet<uint64_t> m_currentSelIds;
-
     // ── Drag selection ──
     bool m_dragging = false;
+    bool m_dragStarted = false;   // true once drag threshold exceeded
     int  m_dragLastLine = -1;
+    QPoint m_dragStartPos;        // viewport coords at press
+    Qt::KeyboardModifiers m_dragInitMods = Qt::NoModifier;
+
+    // ── Deferred click (protects multi-select on double-click) ──
+    uint64_t m_pendingClickNodeId = 0;
+    int      m_pendingClickLine = -1;
+    Qt::KeyboardModifiers m_pendingClickMods = Qt::NoModifier;
 
     // ── Inline edit state ──
     struct InlineEditState {
@@ -78,6 +87,7 @@ private:
         int        spanStart = 0;
         int        linelenAfterReplace = 0;
         QString    original;
+        NodeKind   editKind = NodeKind::Int32;
     };
     InlineEditState m_editState;
 
@@ -94,20 +104,33 @@ private:
     void applyHexDimming(const QVector<LineMeta>& meta);
 
     void commitInlineEdit();
+    int  editEndCol() const;
     bool handleNormalKey(QKeyEvent* ke);
     bool handleEditKey(QKeyEvent* ke);
     void showTypeAutocomplete();
-    void updateEditableUnderline(int line);
+    void paintEditableSpans(int line);
+    void updateEditableIndicators(int line);
     void applyHoverCursor();
     void applyHoverHighlight();
+    void validateEditLive();
+    void setEditComment(const QString& comment);
 
     // ── Refactored helpers ──
+    struct HitInfo { int line = -1; int col = -1; uint64_t nodeId = 0; bool inFoldCol = false; };
+    HitInfo hitTest(const QPoint& viewportPos) const;
+
     struct EndEditInfo { int nodeIdx; int subLine; EditTarget target; };
     EndEditInfo endInlineEdit();
 
     struct NormalizedSpan { int start = 0; int end = 0; bool valid = false; };
     NormalizedSpan normalizeSpan(const ColumnSpan& raw, const QString& lineText,
                                  EditTarget target, bool skipPrefixes) const;
+
+    // ── Indicator helpers (dedupe + UTF-8 safe) ──
+    void clearIndicatorLine(int indic, int line);
+    void fillIndicatorCols(int indic, int line, int colA, int colB);
+    bool resolvedSpanFor(int line, EditTarget t, NormalizedSpan& out,
+                         QString* lineTextOut = nullptr) const;
 };
 
 } // namespace rcx

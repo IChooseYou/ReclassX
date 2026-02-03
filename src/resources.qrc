@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="chevron-right.png">icons/chevron-right.png</file>
+    <file alias="chevron-down.png">icons/chevron-down.png</file>
+  </qresource>
+  <qresource prefix="/fonts">
+    <file alias="Iosevka-Regular.ttf">fonts/Iosevka-Regular.ttf</file>
+  </qresource>
+</RCC>

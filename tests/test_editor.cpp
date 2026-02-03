@@ -279,27 +279,28 @@ private slots:
         QVERIFY(ok);
         QCOMPARE((uint8_t)b[0], (uint8_t)0x4D);
 
-        // Hex32 with space-separated bytes
+        // Hex32 with space-separated bytes (raw byte order, no endian conversion)
         b = fmt::parseValue(NodeKind::Hex32, "DE AD BE EF", &ok);
         QVERIFY(ok);
         QCOMPARE(b.size(), 4);
-        uint32_t v32;
-        memcpy(&v32, b.data(), 4);
-        QCOMPARE(v32, (uint32_t)0xDEADBEEF);
+        QCOMPARE((uint8_t)b[0], (uint8_t)0xDE);
+        QCOMPARE((uint8_t)b[1], (uint8_t)0xAD);
+        QCOMPARE((uint8_t)b[2], (uint8_t)0xBE);
+        QCOMPARE((uint8_t)b[3], (uint8_t)0xEF);
 
         // Hex64 with space-separated bytes
         b = fmt::parseValue(NodeKind::Hex64, "4D 5A 90 00 00 00 00 00", &ok);
         QVERIFY(ok);
         QCOMPARE(b.size(), 8);
-        uint64_t v64;
-        memcpy(&v64, b.data(), 8);
-        QCOMPARE(v64, (uint64_t)0x4D5A900000000000ULL);
+        QCOMPARE((uint8_t)b[0], (uint8_t)0x4D);
+        QCOMPARE((uint8_t)b[1], (uint8_t)0x5A);
+        QCOMPARE((uint8_t)b[7], (uint8_t)0x00);
 
         // Hex64 continuous (should still work)
         b = fmt::parseValue(NodeKind::Hex64, "4D5A900000000000", &ok);
         QVERIFY(ok);
-        memcpy(&v64, b.data(), 8);
-        QCOMPARE(v64, (uint64_t)0x4D5A900000000000ULL);
+        QCOMPARE((uint8_t)b[0], (uint8_t)0x4D);
+        QCOMPARE((uint8_t)b[1], (uint8_t)0x5A);
 
         // Hex64 with 0x prefix and spaces
         b = fmt::parseValue(NodeKind::Hex64, "0x4D 5A 90 00 00 00 00 00", &ok);

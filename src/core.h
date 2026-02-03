@@ -1,5 +1,6 @@
 #pragma once
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -27,6 +28,16 @@ enum class NodeKind : uint8_t {
     Struct, Array
 };
 
+// ── Kind flags (replaces repeated Hex/Padding switches) ──
+
+enum KindFlags : uint32_t {
+    KF_None       = 0,
+    KF_HexPreview = 1 << 0,  // Hex8..Hex64 + Padding (ASCII+hex layout)
+    KF_Container  = 1 << 1,  // Struct/Array
+    KF_String     = 1 << 2,  // UTF8/UTF16
+    KF_Vector     = 1 << 3,  // Vec2/3/4
+};
+
 // ── Unified kind metadata table (single source of truth) ──
 
 struct KindMeta {
@@ -36,36 +47,37 @@ struct KindMeta {
     int         size;      // byte size (0 = dynamic: Struct/Array)
     int         lines;     // display line count
     int         align;     // natural alignment
+    uint32_t    flags;     // KindFlags bitmask
 };
 
 inline constexpr KindMeta kKindMeta[] = {
-    // kind                name         typeName      sz  ln  al
-    {NodeKind::Hex8,      "Hex8",      "Hex8",        1,  1,  1},
-    {NodeKind::Hex16,     "Hex16",     "Hex16",       2,  1,  2},
-    {NodeKind::Hex32,     "Hex32",     "Hex32",       4,  1,  4},
-    {NodeKind::Hex64,     "Hex64",     "Hex64",       8,  1,  8},
-    {NodeKind::Int8,      "Int8",      "int8_t",      1,  1,  1},
-    {NodeKind::Int16,     "Int16",     "int16_t",     2,  1,  2},
-    {NodeKind::Int32,     "Int32",     "int32_t",     4,  1,  4},
-    {NodeKind::Int64,     "Int64",     "int64_t",     8,  1,  8},
-    {NodeKind::UInt8,     "UInt8",     "uint8_t",     1,  1,  1},
-    {NodeKind::UInt16,    "UInt16",    "uint16_t",    2,  1,  2},
-    {NodeKind::UInt32,    "UInt32",    "uint32_t",    4,  1,  4},
-    {NodeKind::UInt64,    "UInt64",    "uint64_t",    8,  1,  8},
-    {NodeKind::Float,     "Float",     "float",       4,  1,  4},
-    {NodeKind::Double,    "Double",    "double",      8,  1,  8},
-    {NodeKind::Bool,      "Bool",      "bool",        1,  1,  1},
-    {NodeKind::Pointer32, "Pointer32", "ptr32",       4,  1,  4},
-    {NodeKind::Pointer64, "Pointer64", "ptr64",       8,  1,  8},
-    {NodeKind::Vec2,      "Vec2",      "Vec2",        8,  2,  4},
-    {NodeKind::Vec3,      "Vec3",      "Vec3",       12,  3,  4},
-    {NodeKind::Vec4,      "Vec4",      "Vec4",       16,  4,  4},
-    {NodeKind::Mat4x4,    "Mat4x4",    "Mat4x4",     64,  4,  4},
-    {NodeKind::UTF8,      "UTF8",      "char[]",      1,  1,  1},
-    {NodeKind::UTF16,     "UTF16",     "wchar_t[]",   2,  1,  2},
-    {NodeKind::Padding,   "Padding",   "pad",         1,  1,  1},
-    {NodeKind::Struct,    "Struct",    "struct",       0,  1,  1},
-    {NodeKind::Array,     "Array",     "array",        0,  1,  1},
+    // kind                name         typeName      sz  ln  al  flags
+    {NodeKind::Hex8,      "Hex8",      "Hex8",        1,  1,  1, KF_HexPreview},
+    {NodeKind::Hex16,     "Hex16",     "Hex16",       2,  1,  2, KF_HexPreview},
+    {NodeKind::Hex32,     "Hex32",     "Hex32",       4,  1,  4, KF_HexPreview},
+    {NodeKind::Hex64,     "Hex64",     "Hex64",       8,  1,  8, KF_HexPreview},
+    {NodeKind::Int8,      "Int8",      "int8_t",      1,  1,  1, KF_None},
+    {NodeKind::Int16,     "Int16",     "int16_t",     2,  1,  2, KF_None},
+    {NodeKind::Int32,     "Int32",     "int32_t",     4,  1,  4, KF_None},
+    {NodeKind::Int64,     "Int64",     "int64_t",     8,  1,  8, KF_None},
+    {NodeKind::UInt8,     "UInt8",     "uint8_t",     1,  1,  1, KF_None},
+    {NodeKind::UInt16,    "UInt16",    "uint16_t",    2,  1,  2, KF_None},
+    {NodeKind::UInt32,    "UInt32",    "uint32_t",    4,  1,  4, KF_None},
+    {NodeKind::UInt64,    "UInt64",    "uint64_t",    8,  1,  8, KF_None},
+    {NodeKind::Float,     "Float",     "float",       4,  1,  4, KF_None},
+    {NodeKind::Double,    "Double",    "double",      8,  1,  8, KF_None},
+    {NodeKind::Bool,      "Bool",      "bool",        1,  1,  1, KF_None},
+    {NodeKind::Pointer32, "Pointer32", "ptr32",       4,  1,  4, KF_None},
+    {NodeKind::Pointer64, "Pointer64", "ptr64",       8,  1,  8, KF_None},
+    {NodeKind::Vec2,      "Vec2",      "Vec2",        8,  2,  4, KF_Vector},
+    {NodeKind::Vec3,      "Vec3",      "Vec3",       12,  3,  4, KF_Vector},
+    {NodeKind::Vec4,      "Vec4",      "Vec4",       16,  4,  4, KF_Vector},
+    {NodeKind::Mat4x4,    "Mat4x4",    "Mat4x4",     64,  4,  4, KF_None},
+    {NodeKind::UTF8,      "UTF8",      "char[]",      1,  1,  1, KF_String},
+    {NodeKind::UTF16,     "UTF16",     "wchar_t[]",   2,  1,  2, KF_String},
+    {NodeKind::Padding,   "Padding",   "pad",         1,  1,  1, KF_HexPreview},
+    {NodeKind::Struct,    "Struct",    "struct",      0,  1,  1, KF_Container},
+    {NodeKind::Array,     "Array",     "array",       0,  1,  1, KF_Container},
 };
 
 inline constexpr const KindMeta* kindMeta(NodeKind k) {
@@ -98,6 +110,27 @@ inline NodeKind kindFromTypeName(const QString& s, bool* ok = nullptr) {
     }
     if (ok) *ok = false;
     return NodeKind::Hex8;
+}
+
+inline constexpr uint32_t flagsFor(NodeKind k) {
+    const auto* m = kindMeta(k);
+    return m ? m->flags : 0;
+}
+inline constexpr bool isHexPreview(NodeKind k) {
+    return flagsFor(k) & KF_HexPreview;
+}
+
+inline QStringList allTypeNamesForUI(bool stripBrackets = false) {
+    QStringList out;
+    out.reserve(std::size(kKindMeta));
+    for (const auto& m : kKindMeta) {
+        QString t = QString::fromLatin1(m.typeName);
+        if (stripBrackets) t.remove(QStringLiteral("[]"));
+        out << t;
+    }
+    out.sort(Qt::CaseInsensitive);
+    out.removeDuplicates();
+    return out;
 }
 
 // ── Marker vocabulary ──
@@ -416,7 +449,8 @@ namespace cmd {
     struct Rename      { uint64_t nodeId; QString oldName, newName; };
     struct Collapse    { uint64_t nodeId; bool oldState, newState; };
     struct Insert      { Node node; };
-    struct Remove      { uint64_t nodeId; QVector<Node> subtree; };
+    struct Remove      { uint64_t nodeId; QVector<Node> subtree;
+                         QVector<OffsetAdj> offAdjs; };
     struct ChangeBase  { uint64_t oldBase, newBase; };
     struct WriteBytes  { uint64_t addr; QByteArray oldBytes, newBytes; };
 }
@@ -437,10 +471,12 @@ struct ColumnSpan {
 enum class EditTarget { Name, Type, Value };
 
 // Column layout constants (shared with format.cpp span computation)
-inline constexpr int kFoldCol  = 3;   // 3-char fold indicator prefix per line
-inline constexpr int kColType  = 10;
-inline constexpr int kColName  = 24;
-inline constexpr int kSepWidth = 2;
+inline constexpr int kFoldCol    = 3;   // 3-char fold indicator prefix per line
+inline constexpr int kColType    = 10;
+inline constexpr int kColName    = 24;
+inline constexpr int kColValue   = 22;
+inline constexpr int kColComment = 28;  // "// Enter=Save Esc=Cancel" fits
+inline constexpr int kSepWidth   = 2;
 
 inline ColumnSpan typeSpanFor(const LineMeta& lm) {
     if (lm.lineKind != LineKind::Field || lm.isContinuation) return {};
@@ -450,29 +486,58 @@ inline ColumnSpan typeSpanFor(const LineMeta& lm) {
 
 inline ColumnSpan nameSpanFor(const LineMeta& lm) {
     if (lm.isContinuation || lm.lineKind != LineKind::Field) return {};
-    // Hex/Padding nodes show ASCII data preview instead of name
-    switch (lm.nodeKind) {
-    case NodeKind::Hex8:  case NodeKind::Hex16:
-    case NodeKind::Hex32: case NodeKind::Hex64:
-    case NodeKind::Padding:
-        return {};
-    default: break;
-    }
+
     int ind = kFoldCol + lm.depth * 3;
     int start = ind + kColType + kSepWidth;
+
+    // Hex/Padding: ASCII preview takes the name column position (8 chars)
+    if (isHexPreview(lm.nodeKind))
+        return {start, start + 8, true};
+
     return {start, start + kColName, true};
 }
 
-inline ColumnSpan valueSpanFor(const LineMeta& lm, int lineLength) {
+inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/) {
     if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
     int ind = kFoldCol + lm.depth * 3;
+
+    // Hex/Padding layout: [Type][sep][ASCII(8)][sep][hex bytes(23)]
+    bool isHexPad = isHexPreview(lm.nodeKind);
+    int valWidth = isHexPad ? 23 : kColValue;  // hex bytes or value column
+
     if (lm.isContinuation) {
-        int prefixW = kColType + kColName + 4; // 2 seps × 2 chars
+        int prefixW = isHexPad
+            ? (kColType + kSepWidth + 8 + kSepWidth)
+            : (kColType + kColName + 4);
         int start = ind + prefixW;
-        return {start, lineLength, start < lineLength};
+        return {start, start + valWidth, true};
     }
     if (lm.lineKind != LineKind::Field) return {};
-    int start = ind + kColType + kSepWidth + kColName + kSepWidth;
+
+    int start = isHexPad
+        ? (ind + kColType + kSepWidth + 8 + kSepWidth)
+        : (ind + kColType + kSepWidth + kColName + kSepWidth);
+    return {start, start + valWidth, true};
+}
+
+inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength) {
+    if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
+    int ind = kFoldCol + lm.depth * 3;
+
+    bool isHexPad = isHexPreview(lm.nodeKind);
+    int valWidth = isHexPad ? 23 : kColValue;
+
+    int start;
+    if (lm.isContinuation) {
+        int prefixW = isHexPad
+            ? (kColType + kSepWidth + 8 + kSepWidth)
+            : (kColType + kColName + 4);
+        start = ind + prefixW + valWidth;
+    } else {
+        start = isHexPad
+            ? (ind + kColType + kSepWidth + 8 + kSepWidth + valWidth)
+            : (ind + kColType + kSepWidth + kColName + kSepWidth + valWidth);
+    }
     return {start, lineLength, start < lineLength};
 }
 
@@ -504,7 +569,8 @@ namespace fmt {
     QString fmtPointer32(uint32_t v);
     QString fmtPointer64(uint64_t v);
     QString fmtNodeLine(const Node& node, const Provider& prov,
-                        uint64_t addr, int depth, int subLine = 0);
+                        uint64_t addr, int depth, int subLine = 0,
+                        const QString& comment = {});
     QString fmtOffsetMargin(int64_t relativeOffset, bool isContinuation);
     QString fmtStructHeader(const Node& node, int depth);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
@@ -514,6 +580,8 @@ namespace fmt {
     QString editableValue(const Node& node, const Provider& prov,
                           uint64_t addr, int subLine);
     QByteArray parseValue(NodeKind kind, const QString& text, bool* ok);
+    QByteArray parseAsciiValue(const QString& text, int expectedSize, bool* ok);
+    QString validateValue(NodeKind kind, const QString& text);
 } // namespace fmt
 
 // ── Compose function forward declaration ──

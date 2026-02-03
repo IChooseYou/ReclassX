@@ -192,7 +192,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeKind   = node.kind;
         lm.offsetText = QStringLiteral("  ---");
         lm.foldLevel  = computeFoldLevel(depth, false);
-        lm.markerMask = (1u << M_STRUCT_BG);
+        lm.markerMask = 0;
         int sz = tree.structSpan(node.id, &state.childMap);
         state.emitLine(fmt::fmtStructFooter(node, depth, sz), lm);
     }

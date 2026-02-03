@@ -62,7 +62,7 @@ private slots:
         n.name = "Test";
         QString s = fmt::fmtStructFooter(n, 0);
         QVERIFY(s.contains("};"));
-        QVERIFY(s.contains("Test"));
+        // When no size, footer is just "};" without name
     }
 
     void testIndent() {
@@ -93,12 +93,14 @@ private slots:
 
     void testParseValueHex32() {
         bool ok;
+        // Hex parsing produces raw bytes (no endian conversion)
         QByteArray b = fmt::parseValue(NodeKind::Hex32, "DEADBEEF", &ok);
         QVERIFY(ok);
         QCOMPARE(b.size(), 4);
-        uint32_t v;
-        memcpy(&v, b.data(), 4);
-        QCOMPARE(v, (uint32_t)0xDEADBEEF);
+        QCOMPARE((uint8_t)b[0], (uint8_t)0xDE);
+        QCOMPARE((uint8_t)b[1], (uint8_t)0xAD);
+        QCOMPARE((uint8_t)b[2], (uint8_t)0xBE);
+        QCOMPARE((uint8_t)b[3], (uint8_t)0xEF);
     }
 
     void testParseValueBool() {
@@ -119,12 +121,13 @@ private slots:
 
     void testParseValueHex0xPrefix() {
         bool ok;
-        // Hex32 with 0x prefix should work
+        // Hex32 with 0x prefix should work (raw bytes, no endian conversion)
         QByteArray b = fmt::parseValue(NodeKind::Hex32, "0xDEADBEEF", &ok);
         QVERIFY(ok);
-        uint32_t v;
-        memcpy(&v, b.data(), 4);
-        QCOMPARE(v, (uint32_t)0xDEADBEEF);
+        QCOMPARE((uint8_t)b[0], (uint8_t)0xDE);
+        QCOMPARE((uint8_t)b[1], (uint8_t)0xAD);
+        QCOMPARE((uint8_t)b[2], (uint8_t)0xBE);
+        QCOMPARE((uint8_t)b[3], (uint8_t)0xEF);
 
         // Pointer64 with 0x prefix
         b = fmt::parseValue(NodeKind::Pointer64, "0x0000000000400000", &ok);
@@ -229,8 +232,7 @@ private slots:
         // With size
         QString s1 = fmt::fmtStructFooter(n, 0, 0x14);
         QVERIFY(s1.contains("};"));
-        QVERIFY(s1.contains("Test"));
-        QVERIFY(s1.contains("sizeof=0x14"));
+        QVERIFY(s1.contains("sizeof(Test)=0x14"));
 
         // Size 0 → no sizeof
         QString s2 = fmt::fmtStructFooter(n, 0, 0);

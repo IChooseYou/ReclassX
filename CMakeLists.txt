@@ -19,7 +19,7 @@ add_executable(ReclassX
     src/controller.cpp
     src/compose.cpp
     src/format.cpp
-    src/icons.qrc
+    src/resources.qrc
 )
 
 target_include_directories(ReclassX PRIVATE src)
@@ -31,7 +31,7 @@ target_link_libraries(ReclassX PRIVATE
     dbghelp
 )
 
-add_custom_target(screenshot
+add_custom_target(screenshot ALL
     COMMAND ReclassX --screenshot ${CMAKE_BINARY_DIR}/screenshot.png
     DEPENDS ReclassX
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}

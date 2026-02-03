@@ -64,7 +64,7 @@ public:
     void insertNode(uint64_t parentId, int offset, NodeKind kind, const QString& name);
     void removeNode(int nodeIdx);
     void toggleCollapse(int nodeIdx);
-    void setNodeValue(int nodeIdx, int subLine, const QString& text);
+    void setNodeValue(int nodeIdx, int subLine, const QString& text, bool isAscii = false);
     void duplicateNode(int nodeIdx);
     void showContextMenu(RcxEditor* editor, int line, int nodeIdx, int subLine, const QPoint& globalPos);
     void batchRemoveNodes(const QVector<int>& nodeIndices);
@@ -81,6 +81,7 @@ public:
     QSet<uint64_t> selectedIds() const { return m_selIds; }
 
     RcxDocument* document() const { return m_doc; }
+    void setEditorFont(const QString& fontName);
 
 signals:
     void nodeSelected(int nodeIdx);
