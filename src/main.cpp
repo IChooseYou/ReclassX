@@ -435,12 +435,11 @@ void MainWindow::newFile() {
         }
     }
 
-    // ── 0x100 bytes of Hex64 padding (32 nodes) ──
+    // ── Fill with Hex64 until 0x6000 for stress testing ──
     int padStart = oh + 0xF0;  // end of optional header
-    for (int i = 0; i < 32; i++) {
-        int off = padStart + i * 8;
+    for (int off = padStart; off < 0x6000; off += 8) {
         add(NodeKind::Hex64,
-            QString("pad_%1").arg(off, 4, 16, QChar('0')),
+            QString("data_%1").arg(off, 4, 16, QChar('0')),
             off);
     }
 

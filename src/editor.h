@@ -116,6 +116,7 @@ private:
     void applyHoverHighlight();
     void validateEditLive();
     void setEditComment(const QString& comment);
+    void clampEditSelection();
 
     // ── Refactored helpers ──
     struct HitInfo { int line = -1; int col = -1; uint64_t nodeId = 0; bool inFoldCol = false; };

@@ -53,8 +53,8 @@ QString fmtUInt16(uint16_t v) { return hexVal(v); }
 QString fmtUInt32(uint32_t v) { return hexVal(v); }
 QString fmtUInt64(uint64_t v) { return hexVal(v); }
 
-QString fmtFloat(float v)     { return QString::number(v, 'f', 3); }
-QString fmtDouble(double v)   { return QString::number(v, 'f', 6); }
+QString fmtFloat(float v)     { return QString::number(v, 'g', 4); }  // 4 sig figs keeps it short
+QString fmtDouble(double v)   { return QString::number(v, 'g', 6); }
 QString fmtBool(uint8_t v)    { return v ? QStringLiteral("true") : QStringLiteral("false"); }
 
 QString fmtPointer32(uint32_t v) {
@@ -351,11 +351,13 @@ QByteArray parseValue(NodeKind kind, const QString& text, bool* ok) {
     case NodeKind::UInt32:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; uint val = stripHex(s).toUInt(ok,b);              return *ok ? toBytes<uint32_t>(val) : QByteArray{}; }
     case NodeKind::UInt64:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; qulonglong val = stripHex(s).toULongLong(ok,b);   return *ok ? toBytes<uint64_t>(val) : QByteArray{}; }
     case NodeKind::Float: {
-        float val = s.toFloat(ok);
+        QString n = s; n.replace(',', '.');  // Accept EU decimal separator
+        float val = n.toFloat(ok);
         return *ok ? toBytes<float>(val) : QByteArray{};
     }
     case NodeKind::Double: {
-        double val = s.toDouble(ok);
+        QString n = s; n.replace(',', '.');  // Accept EU decimal separator
+        double val = n.toDouble(ok);
         return *ok ? toBytes<double>(val) : QByteArray{};
     }
     case NodeKind::Bool: {
@@ -432,6 +434,11 @@ QString validateValue(NodeKind kind, const QString& text) {
     bool ok;
     parseValue(kind, text, &ok);
     if (ok) return {};
+
+    // Type-appropriate error messages
+    bool isFloatKind = (kind == NodeKind::Float || kind == NodeKind::Double);
+    if (isFloatKind)
+        return QStringLiteral("invalid number");
 
     // Return byte-capacity max based on type size
     const auto* m = kindMeta(kind);

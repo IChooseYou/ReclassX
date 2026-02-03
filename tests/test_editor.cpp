@@ -3,24 +3,29 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QFocusEvent>
+#include <QFile>
 #include <Qsci/qsciscintilla.h>
 #include "editor.h"
 #include "core.h"
 
 using namespace rcx;
 
-// Minimal provider for testing
+// Load first 0x6000 bytes of the test exe for realistic data
 static FileProvider makeTestProvider() {
-    QByteArray data(256, '\0');
-    // Write known values: uint16_t=23117 at offset 0, Hex64 at offset 8
-    uint16_t u16 = 23117;
-    memcpy(data.data(), &u16, 2);
-    uint64_t h64 = 0x4D5A900000000000ULL;
-    memcpy(data.data() + 8, &h64, 8);
+    QFile exe(QCoreApplication::applicationFilePath());
+    if (exe.open(QIODevice::ReadOnly)) {
+        QByteArray data = exe.read(0x6000);
+        exe.close();
+        if (data.size() >= 0x6000)
+            return FileProvider(data);
+    }
+    // Fallback: minimal PE header stub
+    QByteArray data(0x6000, '\0');
+    data[0] = 'M'; data[1] = 'Z';  // DOS signature
     return FileProvider(data);
 }
 
-// Build a simple tree with a struct containing a few fields
+// Build a tree covering 0x6000 bytes with Hex64 fields
 static NodeTree makeTestTree() {
     NodeTree tree;
     tree.baseAddress = 0;
@@ -33,6 +38,7 @@ static NodeTree makeTestTree() {
     int ri = tree.addNode(root);
     uint64_t rootId = tree.nodes[ri].id;
 
+    // First two fields for existing tests
     Node f1;
     f1.kind = NodeKind::UInt16;
     f1.name = "field_u16";
@@ -46,6 +52,17 @@ static NodeTree makeTestTree() {
     f2.parentId = rootId;
     f2.offset = 8;
     tree.addNode(f2);
+
+    // Fill remaining 0x6000 bytes with Hex64 fields (8 bytes each)
+    // Start at offset 16 (0x10), go to 0x6000
+    for (int off = 0x10; off < 0x6000; off += 8) {
+        Node f;
+        f.kind = NodeKind::Hex64;
+        f.name = QString("data_%1").arg(off, 4, 16, QChar('0'));
+        f.parentId = rootId;
+        f.offset = off;
+        tree.addNode(f);
+    }
 
     return tree;
 }
