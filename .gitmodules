@@ -1,0 +1,3 @@
+[submodule "third_party/qscintilla"]
+	path = third_party/qscintilla
+	url = https://github.com/brCreate/QScintilla.git

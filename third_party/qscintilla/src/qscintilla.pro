@@ -286,7 +286,7 @@ SOURCES = \
     SciAccessibility.cpp \
     SciClasses.cpp \
     ScintillaQt.cpp \
-    ../scintilla/lexers/LexA68k.cpp \
+    ../scintilla/lexers/LexA68K.cpp \
     ../scintilla/lexers/LexAPDL.cpp \
     ../scintilla/lexers/LexASY.cpp \
     ../scintilla/lexers/LexAU3.cpp \
