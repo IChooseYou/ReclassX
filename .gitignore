@@ -11,3 +11,6 @@ build/
 *.suo
 .vs/
 CMakeUserPresets.json
+third_party/qscintilla/src/debug
+third_party/qscintilla/src/release
+third_party/qscintilla/src/.qmake.stash
