@@ -23,8 +23,6 @@ static const QColor kFgMarginDim("#505050");
 
 static constexpr int IND_EDITABLE = 8;
 static constexpr int IND_HEX_DIM = 9;
-static constexpr int IND_SELECTED = 10;
-static constexpr int IND_HOVER    = 11;
 
 static QFont editorFont() {
     QFont f("Consolas", 12);
@@ -87,8 +85,7 @@ void RcxEditor::setupScintilla() {
 
     m_sci->setReadOnly(true);
     m_sci->setWrapMode(QsciScintilla::WrapNone);
-    m_sci->setCaretLineVisible(true);
-    m_sci->setCaretLineBackgroundColor(QColor("#2c3338"));
+    m_sci->setCaretLineVisible(false);
 
     m_sci->setPaper(kBgText);
     m_sci->setColor(QColor("#d4d4d4"));
@@ -103,9 +100,9 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETEXTRAASCENT, (long)2);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETEXTRADESCENT, (long)2);
 
-    // Selection colors
-    m_sci->setSelectionBackgroundColor(QColor("#264f78"));
-    m_sci->setSelectionForegroundColor(QColor("#d4d4d4"));
+    // Disable native selection rendering — we use markers for selection
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)0, (long)0);
 
     // Editable-field link-style indicator (colored text + underline)
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
@@ -118,30 +115,6 @@ void RcxEditor::setupScintilla() {
                          IND_HEX_DIM, 17 /*INDIC_TEXTFORE*/);
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
                          IND_HEX_DIM, QColor("#505050"));
-
-    // Selection overlay — translucent blue box
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
-                         IND_SELECTED, 8 /*INDIC_STRAIGHTBOX*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_SELECTED, QColor("#264f78"));
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETALPHA,
-                         IND_SELECTED, (long)50);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETOUTLINEALPHA,
-                         IND_SELECTED, (long)100);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETUNDER,
-                         IND_SELECTED, (long)1);
-
-    // Hover row highlight — very subtle fill
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
-                         IND_HOVER, 16 /*INDIC_FULLBOX*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_HOVER, QColor("#264f78"));
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETALPHA,
-                         IND_HOVER, (long)25);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETOUTLINEALPHA,
-                         IND_HOVER, (long)0);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETUNDER,
-                         IND_HOVER, (long)1);
 }
 
 void RcxEditor::setupLexer() {
@@ -238,6 +211,14 @@ void RcxEditor::setupMarkers() {
     m_sci->markerDefine(QsciScintilla::Background, M_STRUCT_BG);
     m_sci->setMarkerBackgroundColor(QColor("#1a2332"), M_STRUCT_BG);
     m_sci->setMarkerForegroundColor(QColor("#d4d4d4"), M_STRUCT_BG);
+
+    // M_HOVER (6): full-row hover highlight
+    m_sci->markerDefine(QsciScintilla::Background, M_HOVER);
+    m_sci->setMarkerBackgroundColor(QColor(43, 43, 43), M_HOVER);
+
+    // M_SELECTED (7): full-row selection highlight (higher = wins over hover)
+    m_sci->markerDefine(QsciScintilla::Background, M_SELECTED);
+    m_sci->setMarkerBackgroundColor(QColor(53, 53, 53), M_SELECTED);
 }
 
 void RcxEditor::allocateMarginStyles() {
@@ -324,6 +305,12 @@ void RcxEditor::applyFoldLevels(const QVector<LineMeta>& meta) {
     }
 }
 
+static inline void lineRangeNoEol(QsciScintilla* sci, int line, long& start, long& len) {
+    start = sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)line);
+    long end = sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, (unsigned long)line);
+    len = (end > start) ? (end - start) : 0;
+}
+
 void RcxEditor::applyHexDimming(const QVector<LineMeta>& meta) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_HEX_DIM);
     for (int i = 0; i < meta.size(); i++) {
@@ -331,10 +318,7 @@ void RcxEditor::applyHexDimming(const QVector<LineMeta>& meta) {
         case NodeKind::Hex8:  case NodeKind::Hex16:
         case NodeKind::Hex32: case NodeKind::Hex64:
         case NodeKind::Padding: {
-            long pos = m_sci->SendScintilla(
-                QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)i);
-            long len = m_sci->SendScintilla(
-                QsciScintillaBase::SCI_LINELENGTH, (unsigned long)i);
+            long pos, len; lineRangeNoEol(m_sci, i, pos, len);
             if (len > 0)
                 m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, pos, len);
             break;
@@ -346,49 +330,23 @@ void RcxEditor::applyHexDimming(const QVector<LineMeta>& meta) {
 
 void RcxEditor::applySelectionOverlay(const QSet<uint64_t>& selIds) {
     m_currentSelIds = selIds;
-
-    // Clear all selection indicators
-    m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_SELECTED);
-    long docLen = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLENGTH);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, (uintptr_t)0, docLen);
-
-    if (selIds.isEmpty()) return;
-
+    m_sci->markerDeleteAll(M_SELECTED);
     for (int i = 0; i < m_meta.size(); i++) {
-        if (selIds.contains(m_meta[i].nodeId)) {
-            long pos = m_sci->SendScintilla(
-                QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)i);
-            long len = m_sci->SendScintilla(
-                QsciScintillaBase::SCI_LINELENGTH, (unsigned long)i);
-            if (len > 0)
-                m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, pos, len);
-        }
+        if (selIds.contains(m_meta[i].nodeId))
+            m_sci->markerAdd(i, M_SELECTED);
     }
-
-    // Refresh hover since selection may suppress it
     applyHoverHighlight();
 }
 
 void RcxEditor::applyHoverHighlight() {
-    // Clear previous hover indicator
-    m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_HOVER);
-    long docLen = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLENGTH);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, (uintptr_t)0, docLen);
-
+    m_sci->markerDeleteAll(M_HOVER);
     if (m_editState.active) return;
     if (!m_hoverInside) return;
     if (m_hoveredNodeId == 0) return;
     if (m_currentSelIds.contains(m_hoveredNodeId)) return;
-
     for (int i = 0; i < m_meta.size(); i++) {
-        if (m_meta[i].nodeId == m_hoveredNodeId) {
-            long pos = m_sci->SendScintilla(
-                QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)i);
-            long len = m_sci->SendScintilla(
-                QsciScintillaBase::SCI_LINELENGTH, (unsigned long)i);
-            if (len > 0)
-                m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, pos, len);
-        }
+        if (m_meta[i].nodeId == m_hoveredNodeId)
+            m_sci->markerAdd(i, M_HOVER);
     }
 }
 
@@ -465,6 +423,9 @@ RcxEditor::EndEditInfo RcxEditor::endInlineEdit() {
     EndEditInfo info{m_editState.nodeIdx, m_editState.subLine, m_editState.target};
     m_editState.active = false;
     m_sci->setReadOnly(true);
+    // Disable selection rendering again
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)0, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)1);
     m_sci->SendScintilla(QsciScintillaBase::SCI_EMPTYUNDOBUFFER);
     return info;
@@ -613,11 +574,39 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                 // Selection click — emit for controller to manage
                 if (line >= 0 && line < m_meta.size()) {
                     uint64_t nid = m_meta[line].nodeId;
-                    if (nid != 0)
+                    if (nid != 0) {
                         emit nodeClicked(line, nid, me->modifiers());
+                        m_dragging = true;
+                        m_dragLastLine = line;
+                    }
                 }
             }
         }
+    }
+    // Drag-select: extend selection as mouse moves with button held
+    if (obj == m_sci->viewport() && !m_editState.active
+        && event->type() == QEvent::MouseMove && m_dragging) {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (me->buttons() & Qt::LeftButton) {
+            long pos = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMPOINTCLOSE,
+                                             (unsigned long)me->pos().x(), (long)me->pos().y());
+            if (pos >= 0) {
+                int line = (int)m_sci->SendScintilla(
+                    QsciScintillaBase::SCI_LINEFROMPOSITION, (unsigned long)pos);
+                if (line >= 0 && line < m_meta.size() && line != m_dragLastLine) {
+                    uint64_t nid = m_meta[line].nodeId;
+                    if (nid != 0) {
+                        emit nodeClicked(line, nid, Qt::ShiftModifier);
+                        m_dragLastLine = line;
+                    }
+                }
+            }
+        } else {
+            m_dragging = false;
+        }
+    }
+    if (obj == m_sci->viewport() && event->type() == QEvent::MouseButtonRelease) {
+        m_dragging = false;
     }
     if (obj == m_sci->viewport() && !m_editState.active
         && event->type() == QEvent::MouseButtonDblClick) {
@@ -639,8 +628,7 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         }
         // Clear underlines when editor loses focus
         if (m_hintLine >= 0) {
-            long start = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)m_hintLine);
-            long len   = m_sci->SendScintilla(QsciScintillaBase::SCI_LINELENGTH,       (unsigned long)m_hintLine);
+            long start, len; lineRangeNoEol(m_sci, m_hintLine, start, len);
             m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_EDITABLE);
             m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, start, len);
             m_hintLine = -1;
@@ -815,6 +803,11 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)0);
     m_sci->setReadOnly(false);
 
+    // Re-enable selection rendering for inline edit
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)1,
+                         QColor("#264f78"));
+
     // Select just the trimmed text (keeps columns aligned)
     long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
                                            (unsigned long)line);
@@ -902,8 +895,7 @@ void RcxEditor::updateEditableUnderline(int line) {
 
     auto clearLine = [&](int l) {
         if (l < 0) return;
-        long start = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)l);
-        long len   = m_sci->SendScintilla(QsciScintillaBase::SCI_LINELENGTH,       (unsigned long)l);
+        long start, len; lineRangeNoEol(m_sci, l, start, len);
         m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_EDITABLE);
         m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, start, len);
     };

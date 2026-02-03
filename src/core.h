@@ -109,6 +109,8 @@ enum Marker : int {
     M_CYCLE     = 3,
     M_ERR       = 4,
     M_STRUCT_BG = 5,
+    M_HOVER     = 6,
+    M_SELECTED  = 7,
 };
 
 // ── Provider interface ──
