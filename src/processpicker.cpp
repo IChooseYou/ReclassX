@@ -3,11 +3,14 @@
 #include <QTableWidgetItem>
 #include <QHeaderView>
 #include <QMessageBox>
+#include <QFileInfo>
+#include <QPixmap>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
+#include <shellapi.h>
 #endif
 
 ProcessPicker::ProcessPicker(QWidget *parent)
@@ -17,13 +20,16 @@ ProcessPicker::ProcessPicker(QWidget *parent)
     ui->setupUi(this);
     
     // Configure table
-    ui->processTable->horizontalHeader()->setStretchLastSection(true);
-    ui->processTable->setColumnWidth(0, 80);   // PID column
-    ui->processTable->setColumnWidth(1, 200);  // Name column
+    ui->processTable->setColumnWidth(0, 80);   // PID column - fixed width
+    ui->processTable->setColumnWidth(1, 200);  // Name column - fixed width
+    ui->processTable->horizontalHeader()->setStretchLastSection(true);  // Path column - fills remaining space
+    ui->processTable->setWordWrap(false);  // Disable word wrap for single-line display
+    ui->processTable->setTextElideMode(Qt::ElideLeft);  // Elide from left (show end of path)
     
     // Connect signals
     connect(ui->refreshButton, &QPushButton::clicked, this, &ProcessPicker::refreshProcessList);
     connect(ui->processTable, &QTableWidget::itemDoubleClicked, this, &ProcessPicker::onProcessDoubleClicked);
+    connect(ui->filterEdit, &QLineEdit::textChanged, this, &ProcessPicker::filterProcesses);
     
     // Initial process enumeration
     refreshProcessList();
@@ -48,6 +54,7 @@ void ProcessPicker::refreshProcessList()
 {
     ui->processTable->clearContents();
     ui->processTable->setRowCount(0);
+    m_allProcesses.clear();
     enumerateProcesses();
 }
 
@@ -77,28 +84,49 @@ void ProcessPicker::enumerateProcesses()
     PROCESSENTRY32W pe32;
     pe32.dwSize = sizeof(PROCESSENTRY32W);
     
-    if (Process32FirstW(snapshot, &pe32)) {
-        do {
+    if (Process32FirstW(snapshot, &pe32))
+    {
+        do
+        {
             ProcessInfo info;
             info.pid = pe32.th32ProcessID;
             info.name = QString::fromWCharArray(pe32.szExeFile);
             
-            // Try to get full path
+            // Try to get full path and extract icon
+            // If we can't open a process with PROCESS_QUERY_LIMITED_INFORMATION then
+            // we for sure can't access their memory. - Skip in this case
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe32.th32ProcessID);
-            if (hProcess) {
+            if (hProcess)
+            {
                 WCHAR path[MAX_PATH];
                 DWORD pathLen = MAX_PATH;
-                if (QueryFullProcessImageNameW(hProcess, 0, path, &pathLen)) {
+                if (QueryFullProcessImageNameW(hProcess, 0, path, &pathLen) ||
+                    QueryFullProcessImageNameW(hProcess, PROCESS_NAME_NATIVE, path, &pathLen) ||
+                    GetModuleFileNameExW(hProcess, nullptr, path, pathLen))
+                {
                     info.path = QString::fromWCharArray(path);
-                } else {
-                    info.path = "";
+                    
+                    // Extract icon from executable
+                    SHFILEINFOW sfi = {};
+                    if (SHGetFileInfoW(path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
+                        if (sfi.hIcon) {
+                            info.icon = QIcon(QPixmap::fromImage(QImage::fromHICON(sfi.hIcon)));
+                            DestroyIcon(sfi.hIcon);
+                        }
+                    }
+                }
+                else if (GetModuleFileNameExW(hProcess, nullptr, path, pathLen))
+                {
+                    info.path = QString::number(GetLastError());
+                }
+                else
+                {
+                    info.path = QString::number(GetLastError());
                 }
                 CloseHandle(hProcess);
-            } else {
-                info.path = "";
+
+                processes.append(info);
             }
-            
-            processes.append(info);
             
         } while (Process32NextW(snapshot, &pe32));
     }
@@ -109,7 +137,8 @@ void ProcessPicker::enumerateProcesses()
     QMessageBox::warning(this, "Error", "Process enumeration not supported on this platform.");
 #endif
     
-    populateTable(processes);
+    m_allProcesses = processes;
+    applyFilter();
 }
 
 void ProcessPicker::populateTable(const QList<ProcessInfo>& processes)
@@ -124,13 +153,45 @@ void ProcessPicker::populateTable(const QList<ProcessInfo>& processes)
         pidItem->setData(Qt::EditRole, (int)proc.pid);
         ui->processTable->setItem(i, 0, pidItem);
         
-        // Name column
-        ui->processTable->setItem(i, 1, new QTableWidgetItem(proc.name));
+        // Name column with icon
+        auto* nameItem = new QTableWidgetItem(proc.name);
+        if (!proc.icon.isNull()) {
+            nameItem->setIcon(proc.icon);
+        }
+        ui->processTable->setItem(i, 1, nameItem);
         
-        // Path column
-        ui->processTable->setItem(i, 2, new QTableWidgetItem(proc.path));
+        // Path column with tooltip for full path
+        auto* pathItem = new QTableWidgetItem(proc.path);
+        pathItem->setToolTip(proc.path);  // Show full path on hover
+        ui->processTable->setItem(i, 2, pathItem);
+    }
+}
+
+void ProcessPicker::filterProcesses(const QString& text)
+{
+    applyFilter();
+}
+
+void ProcessPicker::applyFilter()
+{
+    QString filterText = ui->filterEdit->text().trimmed();
+    
+    if (filterText.isEmpty()) {
+        populateTable(m_allProcesses);
+        return;
     }
     
-    ui->processTable->resizeColumnsToContents();
-    ui->processTable->horizontalHeader()->setStretchLastSection(true);
+    QList<ProcessInfo> filtered;
+    QString lowerFilter = filterText.toLower();
+    
+    for (const auto& proc : m_allProcesses) {
+        // Match by PID, name, or path
+        if (QString::number(proc.pid).contains(lowerFilter) ||
+            proc.name.toLower().contains(lowerFilter) ||
+            proc.path.toLower().contains(lowerFilter)) {
+            filtered.append(proc);
+        }
+    }
+    
+    populateTable(filtered);
 }
