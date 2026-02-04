@@ -11,6 +11,10 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QListWidget>
+#include <QPushButton>
 #include <QAction>
 #include <QActionGroup>
 #include <QMap>
@@ -19,6 +23,8 @@
 #include <QMetaObject>
 #include <QFontDatabase>
 #include <QSettings>
+
+#include "processpicker.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -107,6 +113,7 @@ private slots:
     void saveFile();
     void saveFileAs();
     void loadBinary();
+    void attachToProcess();
 
     void addNode();
     void removeNode();
@@ -167,6 +174,7 @@ void MainWindow::createMenus() {
     file->addAction("Save &As...",     QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
     file->addSeparator();
     file->addAction("Load &Binary...", this, &MainWindow::loadBinary);
+    file->addAction("&Attach to Process...", this, &MainWindow::attachToProcess);
     file->addSeparator();
     file->addAction("E&xit",           QKeySequence::Quit,   this, &QMainWindow::close);
 
@@ -486,6 +494,23 @@ void MainWindow::loadBinary() {
         "Load Binary Data", {}, "All Files (*)");
     if (path.isEmpty()) return;
     tab->doc->loadData(path);
+}
+
+void MainWindow::attachToProcess() {
+    ProcessPicker dialog(this);
+    
+    if (dialog.exec() == QDialog::Accepted) {
+        uint32_t pid = dialog.selectedProcessId();
+        QString name = dialog.selectedProcessName();
+        
+        if (pid > 0) {
+            // TODO: Implement actual process memory provider
+            QMessageBox::information(this, "Attach to Process",
+                QString("Selected process: %1 (PID: %2)\n\nProcess memory provider not yet implemented.")
+                    .arg(name)
+                    .arg(pid));
+        }
+    }
 }
 
 void MainWindow::addNode() {
