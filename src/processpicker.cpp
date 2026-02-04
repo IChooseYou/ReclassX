@@ -28,8 +28,9 @@ ProcessPicker::ProcessPicker(QWidget *parent)
     
     // Connect signals
     connect(ui->refreshButton, &QPushButton::clicked, this, &ProcessPicker::refreshProcessList);
-    connect(ui->processTable, &QTableWidget::itemDoubleClicked, this, &ProcessPicker::onProcessDoubleClicked);
+    connect(ui->processTable, &QTableWidget::itemDoubleClicked, this, &ProcessPicker::onProcessSelected);
     connect(ui->filterEdit, &QLineEdit::textChanged, this, &ProcessPicker::filterProcesses);
+    connect(ui->attachButton, &QPushButton::clicked, this, &ProcessPicker::onProcessSelected);
     
     // Initial process enumeration
     refreshProcessList();
@@ -58,13 +59,13 @@ void ProcessPicker::refreshProcessList()
     enumerateProcesses();
 }
 
-void ProcessPicker::onProcessDoubleClicked()
+void ProcessPicker::onProcessSelected()
 {
     auto* item = ui->processTable->currentItem();
     if (!item) return;
     
     int row = item->row();
-    m_selectedPid = ui->processTable->item(row, 0)->data(Qt::UserRole).toUInt();
+    m_selectedPid = ui->processTable->item(row, 0)->data(Qt::EditRole).toUInt();
     m_selectedName = ui->processTable->item(row, 1)->text();
     
     accept();
@@ -115,13 +116,9 @@ void ProcessPicker::enumerateProcesses()
                         }
                     }
                 }
-                else if (GetModuleFileNameExW(hProcess, nullptr, path, pathLen))
-                {
-                    info.path = QString::number(GetLastError());
-                }
                 else
                 {
-                    info.path = QString::number(GetLastError());
+                    info.path = "";
                 }
                 CloseHandle(hProcess);
 

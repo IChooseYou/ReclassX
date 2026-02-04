@@ -29,7 +29,7 @@ public:
 
 private slots:
     void refreshProcessList();
-    void onProcessDoubleClicked();
+    void onProcessSelected();
     void filterProcesses(const QString& text);
 
 private:
