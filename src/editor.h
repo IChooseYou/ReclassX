@@ -65,6 +65,7 @@ private:
     bool   m_cursorOverridden = false;
     uint64_t m_hoveredNodeId = 0;
     QSet<uint64_t> m_currentSelIds;
+    int m_hoverSpanLine = -1;  // Line with hover span indicator
     // ── Drag selection ──
     bool m_dragging = false;
     bool m_dragStarted = false;   // true once drag threshold exceeded
@@ -87,6 +88,8 @@ private:
         int        spanStart = 0;
         int        linelenAfterReplace = 0;
         QString    original;
+        long       posStart  = 0;   // Scintilla position of edit start
+        long       posEnd    = 0;   // Scintilla position of edit end
         NodeKind   editKind = NodeKind::Int32;
         int        commentCol = -1;  // fixed comment column (stored at edit start)
         bool       lastValidationOk = true;  // track state to avoid redundant updates
@@ -104,12 +107,15 @@ private:
     void applyMarkers(const QVector<LineMeta>& meta);
     void applyFoldLevels(const QVector<LineMeta>& meta);
     void applyHexDimming(const QVector<LineMeta>& meta);
+    void applyBaseAddressColoring(const QVector<LineMeta>& meta);
 
     void commitInlineEdit();
     int  editEndCol() const;
     bool handleNormalKey(QKeyEvent* ke);
     bool handleEditKey(QKeyEvent* ke);
     void showTypeAutocomplete();
+    void showTypeListFiltered(const QString& filter);
+    void updateTypeListFilter();
     void paintEditableSpans(int line);
     void updateEditableIndicators(int line);
     void applyHoverCursor();

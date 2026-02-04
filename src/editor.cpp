@@ -21,8 +21,10 @@ static const QColor kBgMargin("#252526");
 static const QColor kFgMargin("#858585");
 static const QColor kFgMarginDim("#505050");
 
-static constexpr int IND_EDITABLE  = 8;
-static constexpr int IND_HEX_DIM  = 9;
+static constexpr int IND_EDITABLE   = 8;
+static constexpr int IND_HEX_DIM    = 9;
+static constexpr int IND_BASE_ADDR  = 10;  // Green color for base address
+static constexpr int IND_HOVER_SPAN = 11;  // Blue text on hover (link-like)
 
 static QString g_fontName = "Consolas";
 
@@ -85,6 +87,8 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
         if (!m_editState.active) return;
         if (m_editState.target == EditTarget::Value)
             QTimer::singleShot(0, this, &RcxEditor::validateEditLive);
+        if (m_editState.target == EditTarget::Type)
+            QTimer::singleShot(0, this, &RcxEditor::updateTypeListFilter);
     });
 
     connect(m_sci, &QsciScintilla::selectionChanged,
@@ -129,6 +133,17 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
                          IND_HEX_DIM, QColor("#505050"));
 
+    // Base address indicator — green like comments
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
+                         IND_BASE_ADDR, 17 /*INDIC_TEXTFORE*/);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_BASE_ADDR, QColor("#6a9955"));
+
+    // Hover span indicator — blue text like a link
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
+                         IND_HOVER_SPAN, 17 /*INDIC_TEXTFORE*/);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_HOVER_SPAN, QColor("#569cd6"));
 }
 
 void RcxEditor::setupLexer() {
@@ -277,6 +292,7 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     applyMarkers(result.meta);
     applyFoldLevels(result.meta);
     applyHexDimming(result.meta);
+    applyBaseAddressColoring(result.meta);
 
     // Reset hint line - applySelectionOverlay will repaint indicators
     m_hintLine = -1;
@@ -468,6 +484,23 @@ static QString getLineText(QsciScintilla* sci, int line) {
     return text;
 }
 
+void RcxEditor::applyBaseAddressColoring(const QVector<LineMeta>& meta) {
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_BASE_ADDR);
+    for (int i = 0; i < meta.size(); i++) {
+        const LineMeta& lm = meta[i];
+        if (!lm.isRootHeader) continue;
+        QString lineText = getLineText(m_sci, i);
+        ColumnSpan span = baseAddressFullSpanFor(lm, lineText);
+        if (!span.valid) continue;
+        long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
+                                              (unsigned long)i);
+        long posA = lineStart + span.start;
+        long posB = lineStart + span.end;
+        if (posB > posA)
+            m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, posA, posB - posA);
+    }
+}
+
 // ── Shared inline-edit shutdown ──
 
 RcxEditor::EndEditInfo RcxEditor::endInlineEdit() {
@@ -557,9 +590,10 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
 
     ColumnSpan s;
     switch (t) {
-    case EditTarget::Type:  s = typeSpan(*lm); break;
-    case EditTarget::Name:  s = nameSpan(*lm); break;
-    case EditTarget::Value: s = valueSpan(*lm, textLen); break;
+    case EditTarget::Type:        s = typeSpan(*lm); break;
+    case EditTarget::Name:        s = nameSpan(*lm); break;
+    case EditTarget::Value:       s = valueSpan(*lm, textLen); break;
+    case EditTarget::BaseAddress: s = baseAddressSpanFor(*lm, lineText); break;
     }
 
     if (!s.valid && t == EditTarget::Name)
@@ -623,6 +657,7 @@ static bool hitTestTarget(QsciScintilla* sci,
     ColumnSpan ts = RcxEditor::typeSpan(lm);
     ColumnSpan ns = RcxEditor::nameSpan(lm);
     ColumnSpan vs = RcxEditor::valueSpan(lm, textLen);
+    ColumnSpan bs = baseAddressSpanFor(lm, lineText);  // Base address for root headers
 
     if (!ns.valid)
         ns = headerNameSpan(lm, lineText);
@@ -631,7 +666,8 @@ static bool hitTestTarget(QsciScintilla* sci,
         return s.valid && col >= s.start && col < s.end;
     };
 
-    if (inSpan(ts))      outTarget = EditTarget::Type;
+    if (inSpan(bs))      outTarget = EditTarget::BaseAddress;
+    else if (inSpan(ts)) outTarget = EditTarget::Type;
     else if (inSpan(ns)) outTarget = EditTarget::Name;
     else if (inSpan(vs)) outTarget = EditTarget::Value;
     else return false;
@@ -841,38 +877,22 @@ bool RcxEditor::handleNormalKey(QKeyEvent* ke) {
 // ── Edit mode key handling ──
 
 bool RcxEditor::handleEditKey(QKeyEvent* ke) {
-    bool autocActive = m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCACTIVE);
+    // User list is handled via userListActivated signal, not here
+    // SCI_AUTOCACTIVE is for autocomplete, not user lists
 
     switch (ke->key()) {
     case Qt::Key_Return:
     case Qt::Key_Enter:
     case Qt::Key_Tab:
-        if (autocActive && m_editState.target == EditTarget::Type) {
-            // Extract selected typeName directly from autocomplete
-            QByteArray buf(256, '\0');
-            m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCGETCURRENTTEXT,
-                                 (unsigned long)256, (void*)buf.data());
-            QString selectedType = QString::fromUtf8(buf.constData());
-            m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCCANCEL);
-
-            auto info = endInlineEdit();
-            emit inlineEditCommitted(info.nodeIdx, info.subLine, EditTarget::Type, selectedType);
-            return true;
-        }
         commitInlineEdit();
         return true;
     case Qt::Key_Escape:
-        if (autocActive) {
-            m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCCANCEL);
-            return true;  // close popup, stay in edit mode
-        }
         cancelInlineEdit();
         return true;
     case Qt::Key_Up:
     case Qt::Key_Down:
     case Qt::Key_PageUp:
     case Qt::Key_PageDown:
-        if (autocActive) return false;  // let Scintilla navigate list
         return true;  // block line navigation
     case Qt::Key_Delete:
         return true;  // block to prevent eating trailing content
@@ -963,11 +983,17 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)1,
                          QColor("#264f78"));
 
-    long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
-                                           (unsigned long)line);
-    long posStart = lineStart + m_editState.spanStart;
-    long posEnd   = posStart + trimmed.toUtf8().size();
-    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL, posStart, posEnd);
+    // Use correct UTF-8 position conversion (not lineStart + col!)
+    m_editState.posStart = posFromCol(m_sci, line, norm.start);
+    m_editState.posEnd = posFromCol(m_sci, line, norm.end);
+
+    // For Value/BaseAddress: skip 0x prefix in selection (select only the number)
+    long selStart = m_editState.posStart;
+    if ((target == EditTarget::Value || target == EditTarget::BaseAddress) &&
+        trimmed.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
+        selStart = m_editState.posStart + 2;  // Skip "0x"
+    }
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL, selStart, m_editState.posEnd);
 
     // Show initial edit hint in comment column
     if (target == EditTarget::Value)
@@ -998,33 +1024,30 @@ void RcxEditor::clampEditSelection() {
     int editEnd = editEndCol();
     bool isCursor = (selStartLine == selEndLine && selStartCol == selEndCol);
 
+    // Don't fight cursor positioning - only clamp actual selections
     if (isCursor) {
-        // Cursor positioning (no selection) - only clamp if outside bounds
-        if (selStartLine != m_editState.line ||
-            selStartCol < m_editState.spanStart || selStartCol > editEnd) {
-            int clampedCol = qBound(m_editState.spanStart, selStartCol, editEnd);
-            m_sci->setCursorPosition(m_editState.line, clampedCol);
-        }
-    } else {
-        // Actual selection - clamp both ends to edit span
-        bool clamped = false;
-
-        // Force to edit line
-        if (selStartLine != m_editState.line || selEndLine != m_editState.line) {
-            m_sci->setSelection(m_editState.line, m_editState.spanStart,
-                               m_editState.line, editEnd);
-            s_clamping = false;
-            return;
-        }
-
-        if (selStartCol < m_editState.spanStart) { selStartCol = m_editState.spanStart; clamped = true; }
-        if (selEndCol < m_editState.spanStart) { selEndCol = m_editState.spanStart; clamped = true; }
-        if (selStartCol > editEnd) { selStartCol = editEnd; clamped = true; }
-        if (selEndCol > editEnd) { selEndCol = editEnd; clamped = true; }
-
-        if (clamped)
-            m_sci->setSelection(selStartLine, selStartCol, selEndLine, selEndCol);
+        s_clamping = false;
+        return;
     }
+
+    // Actual selection - clamp both ends to edit span
+    bool clamped = false;
+
+    // Force to edit line
+    if (selStartLine != m_editState.line || selEndLine != m_editState.line) {
+        m_sci->setSelection(m_editState.line, m_editState.spanStart,
+                           m_editState.line, editEnd);
+        s_clamping = false;
+        return;
+    }
+
+    if (selStartCol < m_editState.spanStart) { selStartCol = m_editState.spanStart; clamped = true; }
+    if (selEndCol < m_editState.spanStart) { selEndCol = m_editState.spanStart; clamped = true; }
+    if (selStartCol > editEnd) { selStartCol = editEnd; clamped = true; }
+    if (selEndCol > editEnd) { selEndCol = editEnd; clamped = true; }
+
+    if (clamped)
+        m_sci->setSelection(selStartLine, selStartCol, selEndLine, selEndCol);
 
     s_clamping = false;
 }
@@ -1043,6 +1066,10 @@ void RcxEditor::commitInlineEdit() {
     if (editedLen > 0)
         editedText = lineText.mid(m_editState.spanStart, editedLen).trimmed();
 
+    // For Type edits: if nothing changed, commit original
+    if (m_editState.target == EditTarget::Type && editedText.isEmpty())
+        editedText = m_editState.original;
+
     auto info = endInlineEdit();
     emit inlineEditCommitted(info.nodeIdx, info.subLine, info.target, editedText);
 }
@@ -1056,27 +1083,63 @@ void RcxEditor::cancelInlineEdit() {
     emit inlineEditCancelled();
 }
 
-// ── Type autocomplete ──
+// ── Type picker (user list) ──
 
 void RcxEditor::showTypeAutocomplete() {
+    // Replace original type with spaces (keeps layout, clears for typing)
+    int len = m_editState.original.size();
+    QString spaces(len, ' ');
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL,
+                         m_editState.posStart, m_editState.posEnd);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACESEL,
+                         (uintptr_t)0, spaces.toUtf8().constData());
+
+    // Position cursor at start
+    m_sci->SendScintilla(QsciScintillaBase::SCI_GOTOPOS, m_editState.posStart);
+
+    showTypeListFiltered(QString());  // Show full list initially
+}
+
+void RcxEditor::showTypeListFiltered(const QString& filter) {
     if (!m_editState.active || m_editState.target != EditTarget::Type)
         return;
 
-    // Selection stays intact - typing/autocomplete will replace selected text
+    // Filter type names by prefix
+    QStringList all = allTypeNamesForUI();
+    QStringList filtered;
+    for (const QString& t : all) {
+        if (filter.isEmpty() || t.startsWith(filter, Qt::CaseInsensitive))
+            filtered << t;
+    }
+    if (filtered.isEmpty()) return;  // No matches - keep list hidden
 
-    // Build list from typeName (matches what the editor displays)
-    QByteArray list = allTypeNamesForUI().join(' ').toUtf8();
+    // Show user list (id=1 for types) - selection handled by userListActivated signal
+    QByteArray list = filtered.join(' ').toUtf8();
     m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)' ');
-    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETIGNORECASE, (long)1);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETDROPRESTOFWORD, (long)1);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSHOW,
-                         (uintptr_t)0, list.constData());
+    m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
+                         (uintptr_t)1, list.constData());
+}
 
-    // Highlight the current type in the list
-    QByteArray cur = m_editState.original.toUtf8();
-    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSELECT,
-                         (uintptr_t)0, cur.constData());
+void RcxEditor::updateTypeListFilter() {
+    if (!m_editState.active || m_editState.target != EditTarget::Type)
+        return;
 
+    // Get currently typed text from line
+    QString lineText = getLineText(m_sci, m_editState.line);
+    long curPos = m_sci->SendScintilla(QsciScintillaBase::SCI_GETCURRENTPOS);
+    long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
+                                          (unsigned long)m_editState.line);
+    int col = (int)(curPos - lineStart);
+
+    // Extract text from spanStart to cursor
+    int len = col - m_editState.spanStart;
+    if (len <= 0) {
+        showTypeListFiltered(QString());  // Show full list
+        return;
+    }
+
+    QString typed = lineText.mid(m_editState.spanStart, len);
+    showTypeListFiltered(typed);
 }
 
 // ── Editable-field text-color indicator ──
@@ -1129,6 +1192,12 @@ void RcxEditor::updateEditableIndicators(int line) {
 // ── Hover cursor ──
 
 void RcxEditor::applyHoverCursor() {
+    // Clear previous hover span indicator
+    if (m_hoverSpanLine >= 0) {
+        clearIndicatorLine(IND_HOVER_SPAN, m_hoverSpanLine);
+        m_hoverSpanLine = -1;
+    }
+
     // Edit mode handles its own cursor (I-beam)
     if (m_editState.active)
         return;
@@ -1146,6 +1215,15 @@ void RcxEditor::applyHoverCursor() {
 
     int line; EditTarget t;
     bool tokenHit = hitTestTarget(m_sci, m_meta, m_lastHoverPos, line, t);
+
+    // Apply hover span indicator (blue text like a link)
+    if (tokenHit) {
+        NormalizedSpan span;
+        if (resolvedSpanFor(line, t, span)) {
+            fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
+            m_hoverSpanLine = line;
+        }
+    }
 
     // Also show pointer cursor for fold column on fold-head lines
     bool interactive = tokenHit;
@@ -1175,24 +1253,34 @@ void RcxEditor::setEditComment(const QString& comment) {
     if (s_updating) return;
     s_updating = true;
 
-    // Comment is always at end of line - calculate dynamically as value length changes
     QString lineText = getLineText(m_sci, m_editState.line);
-    int startCol = lineText.size() - kColComment;
-    if (startCol < 0) { s_updating = false; return; }
 
-    QString padded = comment.leftJustified(kColComment, ' ').left(kColComment);
+    // Place comment 2 spaces after current value, prefixed with //
+    int valueEnd = editEndCol();
+    int startCol = valueEnd + 2;  // 2 spaces after value
+    int endCol = lineText.size();
+    int availWidth = endCol - startCol;
+    if (availWidth <= 0) { s_updating = false; return; }
+
+    // Format as "//<comment>" (no space after //)
+    QString formatted = QStringLiteral("//") + comment;
+    QString padded = formatted.leftJustified(availWidth, ' ').left(availWidth);
 
     // Use direct position calculation from line start
     long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
                                           (unsigned long)m_editState.line);
     long posA = lineStart + startCol;
-    long posB = lineStart + startCol + kColComment;
+    long posB = lineStart + endCol;
 
     QByteArray utf8 = padded.toUtf8();
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, posA);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, posB);
     m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET,
                          (uintptr_t)utf8.size(), utf8.constData());
+
+    // Apply green color to hint text (reuse IND_BASE_ADDR which is green)
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_BASE_ADDR);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, posA, posB - posA);
 
     s_updating = false;
 }

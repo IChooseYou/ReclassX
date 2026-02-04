@@ -87,6 +87,14 @@ QString fmtStructHeader(const Node& node, int depth) {
            QStringLiteral(" ") + node.name + QStringLiteral(" {");
 }
 
+QString fmtStructHeaderWithBase(const Node& node, int depth, uint64_t baseAddress) {
+    // Format: "struct Name { base: 0x00400000" - single space after {
+    QString header = indent(depth) + typeName(node.kind).trimmed() +
+                     QStringLiteral(" ") + node.name + QStringLiteral(" { ");
+    QString baseHex = QStringLiteral("0x") + QString::number(baseAddress, 16).toUpper();
+    return header + QStringLiteral("base: ") + baseHex;
+}
+
 QString fmtStructFooter(const Node& node, int depth, int totalSize) {
     QString s = indent(depth) + QStringLiteral("};");
     if (totalSize > 0)
@@ -444,9 +452,48 @@ QString validateValue(NodeKind kind, const QString& text) {
     const auto* m = kindMeta(kind);
     if (m && m->size > 0 && m->size <= 8) {
         uint64_t maxVal = (m->size == 8) ? ~0ULL : ((1ULL << (m->size * 8)) - 1);
-        return QStringLiteral("max 0x%1").arg(maxVal, m->size * 2, 16, QChar('0'));
+        return QStringLiteral("too large! max=0x%1").arg(maxVal, m->size * 2, 16, QChar('0'));
     }
     return QStringLiteral("invalid");
+}
+
+// ── Base address validation (supports simple +/- equations) ──
+
+QString validateBaseAddress(const QString& text) {
+    QString s = text.trimmed();
+    if (s.isEmpty()) return QStringLiteral("empty");
+
+    int pos = 0;
+    bool firstTerm = true;
+
+    while (pos < s.size()) {
+        // Skip whitespace
+        while (pos < s.size() && s[pos].isSpace()) pos++;
+        if (pos >= s.size()) break;
+
+        // Check for +/- operator (except first term)
+        if (!firstTerm) {
+            if (s[pos] == '+' || s[pos] == '-') pos++;
+            else return QStringLiteral("invalid '%1'").arg(s[pos]);
+            while (pos < s.size() && s[pos].isSpace()) pos++;
+        }
+
+        // Skip 0x prefix if present
+        if (pos + 1 < s.size() && s[pos] == '0' && (s[pos+1] == 'x' || s[pos+1] == 'X'))
+            pos += 2;
+
+        // Must have at least one hex digit
+        int numStart = pos;
+        while (pos < s.size() && (s[pos].isDigit() ||
+               (s[pos] >= 'a' && s[pos] <= 'f') ||
+               (s[pos] >= 'A' && s[pos] <= 'F'))) pos++;
+
+        if (pos == numStart) return QStringLiteral("invalid");
+
+        firstTerm = false;
+    }
+
+    return {};
 }
 
 } // namespace rcx::fmt

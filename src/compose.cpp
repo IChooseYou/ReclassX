@@ -115,7 +115,7 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.isContinuation  = isCont;
         lm.lineKind        = isCont ? LineKind::Continuation : LineKind::Field;
         lm.nodeKind        = node.kind;
-        lm.offsetText      = fmt::fmtOffsetMargin(absAddr, isCont);
+        lm.offsetText      = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, isCont);
         lm.markerMask      = computeMarkers(node, prov, absAddr, isCont, depth);
         lm.foldLevel       = computeFoldLevel(depth, false);
 
@@ -145,7 +145,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::Field;
-        lm.offsetText = fmt::fmtOffsetMargin(absAddr, false);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
         lm.nodeKind   = node.kind;
         lm.markerMask = (1u << M_CYCLE) | (1u << M_ERR);
         lm.foldLevel  = computeFoldLevel(depth, false);
@@ -162,13 +162,19 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::Header;
-        lm.offsetText = fmt::fmtOffsetMargin(absAddr, false);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
         lm.nodeKind   = node.kind;
         lm.foldHead      = true;
         lm.foldCollapsed = node.collapsed;
         lm.foldLevel  = computeFoldLevel(depth, true);
         lm.markerMask = (1u << M_STRUCT_BG);
-        state.emitLine(fmt::fmtStructHeader(node, depth), lm);
+        lm.isRootHeader = (node.parentId == 0);  // Root-level struct
+
+        // Root structs show base address, nested structs show normal header
+        QString headerText = lm.isRootHeader
+            ? fmt::fmtStructHeaderWithBase(node, depth, tree.baseAddress)
+            : fmt::fmtStructHeader(node, depth);
+        state.emitLine(headerText, lm);
     }
 
     if (!node.collapsed) {
@@ -215,7 +221,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             lm.nodeId     = node.id;
             lm.depth      = depth;
             lm.lineKind   = LineKind::Field;
-            lm.offsetText = fmt::fmtOffsetMargin(absAddr, false);
+            lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
             lm.nodeKind   = node.kind;
             lm.foldHead      = true;
             lm.foldCollapsed = node.collapsed;

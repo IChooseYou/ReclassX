@@ -427,6 +427,7 @@ struct LineMeta {
     bool     foldHead       = false;
     bool     foldCollapsed  = false;
     bool     isContinuation = false;
+    bool     isRootHeader   = false;  // true for top-level struct headers (base address editable)
     LineKind lineKind       = LineKind::Field;
     NodeKind nodeKind       = NodeKind::Int32;
     QString  offsetText;
@@ -468,15 +469,16 @@ struct ColumnSpan {
     bool valid = false;
 };
 
-enum class EditTarget { Name, Type, Value };
+enum class EditTarget { Name, Type, Value, BaseAddress };
 
 // Column layout constants (shared with format.cpp span computation)
-inline constexpr int kFoldCol    = 3;   // 3-char fold indicator prefix per line
-inline constexpr int kColType    = 10;
-inline constexpr int kColName    = 22;
-inline constexpr int kColValue   = 32;
-inline constexpr int kColComment = 28;  // "// Enter=Save Esc=Cancel" fits
-inline constexpr int kSepWidth   = 2;
+inline constexpr int kFoldCol     = 3;   // 3-char fold indicator prefix per line
+inline constexpr int kColType     = 10;
+inline constexpr int kColName     = 22;
+inline constexpr int kColValue    = 32;
+inline constexpr int kColComment  = 28;  // "// Enter=Save Esc=Cancel" fits
+inline constexpr int kColBaseAddr = 12;  // "0x" + up to 10 hex digits (40-bit address)
+inline constexpr int kSepWidth    = 2;
 
 inline ColumnSpan typeSpanFor(const LineMeta& lm) {
     if (lm.lineKind != LineKind::Field || lm.isContinuation) return {};
@@ -541,6 +543,33 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength) {
     return {start, lineLength, start < lineLength};
 }
 
+// Base address span (only valid for root struct headers)
+// Line format: " - struct Name { base: 0x00400000"
+inline ColumnSpan baseAddressSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isRootHeader) return {};
+    // Find "base: " after the opening brace
+    int baseIdx = lineText.indexOf(QStringLiteral("base: "));
+    if (baseIdx < 0) return {};
+    int startPos = baseIdx + 6;  // after "base: "
+    // Value goes to end of line
+    int endPos = lineText.size();
+    while (endPos > startPos && lineText[endPos-1].isSpace())
+        endPos--;
+    if (endPos <= startPos) return {};
+    return {startPos, endPos, true};
+}
+
+// Full "base: 0x..." span for coloring (includes "base: " prefix)
+inline ColumnSpan baseAddressFullSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isRootHeader) return {};
+    int baseIdx = lineText.indexOf(QStringLiteral("base: "));
+    if (baseIdx < 0) return {};
+    int endPos = lineText.size();
+    while (endPos > baseIdx && lineText[endPos-1].isSpace())
+        endPos--;
+    return {baseIdx, endPos, true};
+}
+
 // ── ViewState ──
 
 struct ViewState {
@@ -573,7 +602,9 @@ namespace fmt {
                         const QString& comment = {});
     QString fmtOffsetMargin(int64_t relativeOffset, bool isContinuation);
     QString fmtStructHeader(const Node& node, int depth);
+    QString fmtStructHeaderWithBase(const Node& node, int depth, uint64_t baseAddress);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
+    QString validateBaseAddress(const QString& text);
     QString indent(int depth);
     QString readValue(const Node& node, const Provider& prov,
                       uint64_t addr, int subLine);

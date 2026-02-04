@@ -455,87 +455,99 @@ private slots:
         QVERIFY(sel.contains(lm->nodeIdx));
     }
 
-    // ── Test: value edit echoes to comment column ──
-    void testValueEditCommentEcho() {
-        m_editor->applyDocument(m_result);
+    // ── Test: base address changes affect header display ──
+    void testBaseAddressDisplay() {
+        // Create tree with base address 0x10
+        NodeTree tree = makeTestTree();
+        tree.baseAddress = 0x10;
+        FileProvider prov = makeTestProvider();
+        ComposeResult result = compose(tree, prov);
 
-        // Begin value edit on line 1 (UInt16 field)
-        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 1);
-        QVERIFY(ok);
-        QVERIFY(m_editor->isEditing());
+        m_editor->applyDocument(result);
 
-        // Get the line text before any typing
-        QString lineBefore;
-        int len = (int)m_editor->scintilla()->SendScintilla(
-            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
-        if (len > 0) {
-            QByteArray buf(len + 1, '\0');
-            m_editor->scintilla()->SendScintilla(
-                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
-            lineBefore = QString::fromUtf8(buf.constData(), len).trimmed();
-        }
+        // Line 0 should be the struct header with isRootHeader=true
+        const LineMeta* lm = m_editor->metaForLine(0);
+        QVERIFY(lm);
+        QCOMPARE(lm->lineKind, LineKind::Header);
+        QVERIFY(lm->isRootHeader);
 
-        // Initial comment should contain "Enter=Save Esc=Cancel"
-        QVERIFY2(lineBefore.contains("Enter=Save"),
-                 qPrintable("Initial comment missing, got: " + lineBefore));
-
-        // Type a digit to trigger validateEditLive
-        QKeyEvent key5(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, "5");
-        QApplication::sendEvent(m_editor->scintilla(), &key5);
-        QApplication::processEvents();
-
-        // Get line text after typing
-        QString lineAfter;
-        len = (int)m_editor->scintilla()->SendScintilla(
-            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
-        if (len > 0) {
-            QByteArray buf(len + 1, '\0');
-            m_editor->scintilla()->SendScintilla(
-                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
-            lineAfter = QString::fromUtf8(buf.constData(), len).trimmed();
-        }
-
-        // Comment should show "!" prefix for invalid value
-        // Since "0x5a4d" + "5" = "0x5a4d5" = 370509 > 65535, it's invalid for UInt16
-        QVERIFY2(lineAfter.contains("! "),
-                 qPrintable("Comment should show '!' for invalid value, got: " + lineAfter));
-
-        // Cancel and reset
-        m_editor->cancelInlineEdit();
-        m_editor->applyDocument(m_result);
-    }
-
-    // ── Test: value validation shows error indicator ──
-    void testValueValidationError() {
-        m_editor->applyDocument(m_result);
-
-        // Begin value edit on line 1 (UInt16 field, value = 23117)
-        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 1);
-        QVERIFY(ok);
-
-        // Type "999" to make value invalid for UInt16 (appends to existing, making it too large)
-        // Original value 23117 -> typing "999" at end makes it invalid (23117999 > 65535)
-        const char* digits = "999";
-        for (int i = 0; digits[i]; i++) {
-            QKeyEvent key(QEvent::KeyPress, Qt::Key_9, Qt::NoModifier, QString(digits[i]));
-            QApplication::sendEvent(m_editor->scintilla(), &key);
-            QApplication::processEvents();
-        }
-
-        // Get line text - comment should show "! " prefix (error)
+        // Get header line text - should contain "0x10"
         QString lineText;
         int len = (int)m_editor->scintilla()->SendScintilla(
-            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)0);
         if (len > 0) {
             QByteArray buf(len + 1, '\0');
             m_editor->scintilla()->SendScintilla(
-                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)0, (void*)buf.data());
             lineText = QString::fromUtf8(buf.constData(), len).trimmed();
         }
 
-        // Comment should show "! " prefix for invalid value
-        QVERIFY2(lineText.contains("! "),
-                 qPrintable("Comment should show '! ' for invalid value, got: " + lineText));
+        // Verify base address appears in header
+        QVERIFY2(lineText.contains("0x10") || lineText.contains("0X10"),
+                 qPrintable("Header should contain base address 0x10, got: " + lineText));
+
+        // Verify struct keyword is present
+        QVERIFY2(lineText.contains("struct"),
+                 qPrintable("Header should contain 'struct', got: " + lineText));
+
+        // Reset to original result
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: base address span is valid for root headers ──
+    void testBaseAddressSpan() {
+        NodeTree tree = makeTestTree();
+        tree.baseAddress = 0x140000000;  // Large address to test span width
+        FileProvider prov = makeTestProvider();
+        ComposeResult result = compose(tree, prov);
+
+        m_editor->applyDocument(result);
+
+        // Line 0 should be root header
+        const LineMeta* lm = m_editor->metaForLine(0);
+        QVERIFY(lm);
+        QVERIFY(lm->isRootHeader);
+
+        // Get line text for span calculation
+        QString lineText;
+        int len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)0);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)0, (void*)buf.data());
+            lineText = QString::fromUtf8(buf.constData(), len);
+            while (lineText.endsWith('\n') || lineText.endsWith('\r'))
+                lineText.chop(1);
+        }
+
+        // Base address span should be valid
+        ColumnSpan bs = baseAddressSpanFor(*lm, lineText);
+        QVERIFY2(bs.valid, "Base address span should be valid for root header");
+        QVERIFY(bs.start < bs.end);
+
+        // The span should cover the hex address
+        QString spanText = lineText.mid(bs.start, bs.end - bs.start);
+        QVERIFY2(spanText.contains("0x") || spanText.startsWith("0X"),
+                 qPrintable("Span should contain hex address, got: " + spanText));
+
+        // Reset
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: base address edit begins on root header ──
+    void testBaseAddressEditBegins() {
+        NodeTree tree = makeTestTree();
+        tree.baseAddress = 0x10;
+        FileProvider prov = makeTestProvider();
+        ComposeResult result = compose(tree, prov);
+
+        m_editor->applyDocument(result);
+
+        // Begin base address edit on line 0 (root header)
+        bool ok = m_editor->beginInlineEdit(EditTarget::BaseAddress, 0);
+        QVERIFY2(ok, "Should be able to begin base address edit on root header");
+        QVERIFY(m_editor->isEditing());
 
         // Cancel and reset
         m_editor->cancelInlineEdit();
