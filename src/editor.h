@@ -88,6 +88,8 @@ private:
         int        linelenAfterReplace = 0;
         QString    original;
         NodeKind   editKind = NodeKind::Int32;
+        int        commentCol = -1;  // fixed comment column (stored at edit start)
+        bool       lastValidationOk = true;  // track state to avoid redundant updates
     };
     InlineEditState m_editState;
 
@@ -114,6 +116,7 @@ private:
     void applyHoverHighlight();
     void validateEditLive();
     void setEditComment(const QString& comment);
+    void clampEditSelection();
 
     // ── Refactored helpers ──
     struct HitInfo { int line = -1; int col = -1; uint64_t nodeId = 0; bool inFoldCol = false; };

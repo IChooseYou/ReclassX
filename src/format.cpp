@@ -8,7 +8,7 @@ namespace rcx::fmt {
 // COL_TYPE and COL_NAME use shared constants from core.h (kColType, kColName)
 static constexpr int COL_TYPE    = kColType;
 static constexpr int COL_NAME    = kColName;
-static constexpr int COL_VALUE   = 22;
+static constexpr int COL_VALUE   = kColValue;
 static constexpr int COL_COMMENT = 28;  // "// Enter=Save Esc=Cancel" fits
 static const QString SEP = QStringLiteral("  ");
 
@@ -36,35 +36,35 @@ QString typeName(NodeKind kind) {
 
 // ── Value formatting ──
 
-static QString hexStr(uint64_t v, int digits) {
-    return QStringLiteral("0x") + QString::number(v, 16).toUpper().rightJustified(digits, '0');
+static QString hexVal(uint64_t v) {
+    return QStringLiteral("0x") + QString::number(v, 16);
 }
 
 static QString rawHex(uint64_t v, int digits) {
-    return QString::number(v, 16).toUpper().rightJustified(digits, '0');
+    return QString::number(v, 16).rightJustified(digits, '0');
 }
 
-QString fmtInt8(int8_t v)     { return QString::number(v); }
-QString fmtInt16(int16_t v)   { return QString::number(v); }
-QString fmtInt32(int32_t v)   { return QString::number(v); }
-QString fmtInt64(int64_t v)   { return QString::number(v); }
-QString fmtUInt8(uint8_t v)   { return hexStr(v, 2); }
-QString fmtUInt16(uint16_t v) { return hexStr(v, 4); }
-QString fmtUInt32(uint32_t v) { return hexStr(v, 8); }
-QString fmtUInt64(uint64_t v) { return hexStr(v, 16); }
+QString fmtInt8(int8_t v)     { return hexVal((uint8_t)v); }
+QString fmtInt16(int16_t v)   { return hexVal((uint16_t)v); }
+QString fmtInt32(int32_t v)   { return hexVal((uint32_t)v); }
+QString fmtInt64(int64_t v)   { return hexVal((uint64_t)v); }
+QString fmtUInt8(uint8_t v)   { return hexVal(v); }
+QString fmtUInt16(uint16_t v) { return hexVal(v); }
+QString fmtUInt32(uint32_t v) { return hexVal(v); }
+QString fmtUInt64(uint64_t v) { return hexVal(v); }
 
-QString fmtFloat(float v)     { return QString::number(v, 'f', 3); }
-QString fmtDouble(double v)   { return QString::number(v, 'f', 6); }
+QString fmtFloat(float v)     { return QString::number(v, 'g', 4); }  // 4 sig figs keeps it short
+QString fmtDouble(double v)   { return QString::number(v, 'g', 6); }
 QString fmtBool(uint8_t v)    { return v ? QStringLiteral("true") : QStringLiteral("false"); }
 
 QString fmtPointer32(uint32_t v) {
     if (v == 0) return QStringLiteral("-> NULL");
-    return QStringLiteral("-> ") + hexStr(v, 8);
+    return QStringLiteral("-> ") + hexVal(v);
 }
 
 QString fmtPointer64(uint64_t v) {
     if (v == 0) return QStringLiteral("-> NULL");
-    return QStringLiteral("-> ") + hexStr(v, 16);
+    return QStringLiteral("-> ") + hexVal(v);
 }
 
 // ── Indentation ──
@@ -137,10 +137,10 @@ static QString readValueImpl(const Node& node, const Provider& prov,
                              uint64_t addr, int subLine, ValueMode mode) {
     const bool display = (mode == ValueMode::Display);
     switch (node.kind) {
-    case NodeKind::Hex8:      return display ? hexStr(prov.readU8(addr), 2)  : rawHex(prov.readU8(addr), 2);
-    case NodeKind::Hex16:     return display ? hexStr(prov.readU16(addr), 4) : rawHex(prov.readU16(addr), 4);
-    case NodeKind::Hex32:     return display ? hexStr(prov.readU32(addr), 8) : rawHex(prov.readU32(addr), 8);
-    case NodeKind::Hex64:     return display ? hexStr(prov.readU64(addr), 16): rawHex(prov.readU64(addr), 16);
+    case NodeKind::Hex8:      return display ? hexVal(prov.readU8(addr))  : rawHex(prov.readU8(addr), 2);
+    case NodeKind::Hex16:     return display ? hexVal(prov.readU16(addr)) : rawHex(prov.readU16(addr), 4);
+    case NodeKind::Hex32:     return display ? hexVal(prov.readU32(addr)) : rawHex(prov.readU32(addr), 8);
+    case NodeKind::Hex64:     return display ? hexVal(prov.readU64(addr)) : rawHex(prov.readU64(addr), 16);
     case NodeKind::Int8:      return fmtInt8((int8_t)prov.readU8(addr));
     case NodeKind::Int16:     return fmtInt16((int16_t)prov.readU16(addr));
     case NodeKind::Int32:     return fmtInt32((int32_t)prov.readU32(addr));
@@ -175,7 +175,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         line += QStringLiteral("]");
         return line;
     }
-    case NodeKind::Padding:   return display ? hexStr(prov.readU8(addr), 2) : rawHex(prov.readU8(addr), 2);
+    case NodeKind::Padding:   return display ? hexVal(prov.readU8(addr)) : rawHex(prov.readU8(addr), 2);
     case NodeKind::UTF8: {
         QByteArray bytes = prov.readBytes(addr, node.strLen);
         int end = bytes.indexOf('\0');
@@ -351,11 +351,13 @@ QByteArray parseValue(NodeKind kind, const QString& text, bool* ok) {
     case NodeKind::UInt32:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; uint val = stripHex(s).toUInt(ok,b);              return *ok ? toBytes<uint32_t>(val) : QByteArray{}; }
     case NodeKind::UInt64:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; qulonglong val = stripHex(s).toULongLong(ok,b);   return *ok ? toBytes<uint64_t>(val) : QByteArray{}; }
     case NodeKind::Float: {
-        float val = s.toFloat(ok);
+        QString n = s; n.replace(',', '.');  // Accept EU decimal separator
+        float val = n.toFloat(ok);
         return *ok ? toBytes<float>(val) : QByteArray{};
     }
     case NodeKind::Double: {
-        double val = s.toDouble(ok);
+        QString n = s; n.replace(',', '.');  // Accept EU decimal separator
+        double val = n.toDouble(ok);
         return *ok ? toBytes<double>(val) : QByteArray{};
     }
     case NodeKind::Bool: {
@@ -401,15 +403,48 @@ QString validateValue(NodeKind kind, const QString& text) {
     QString s = text.trimmed();
     if (s.isEmpty()) return {};
 
+    // For integer/hex types, validate character set first
+    bool isHexKind = (kind >= NodeKind::Hex8 && kind <= NodeKind::Hex64)
+                  || kind == NodeKind::Pointer32 || kind == NodeKind::Pointer64;
+    bool isIntKind = (kind >= NodeKind::Int8 && kind <= NodeKind::UInt64);
+
+    if (isHexKind || isIntKind) {
+        bool hasHexPrefix = s.startsWith("0x", Qt::CaseInsensitive);
+        QString digits = hasHexPrefix ? s.mid(2) : s;
+
+        if (hasHexPrefix || isHexKind) {
+            // Hex mode: only 0-9, a-f, A-F
+            for (QChar c : digits) {
+                if (!c.isDigit() && !(c >= 'a' && c <= 'f') && !(c >= 'A' && c <= 'F'))
+                    return QStringLiteral("invalid hex '%1'").arg(c);
+            }
+        } else {
+            // Decimal mode: only digits (and leading minus for signed)
+            int start = 0;
+            bool isSigned = (kind >= NodeKind::Int8 && kind <= NodeKind::Int64);
+            if (isSigned && !digits.isEmpty() && digits[0] == '-') start = 1;
+            for (int i = start; i < digits.size(); i++) {
+                if (!digits[i].isDigit())
+                    return QStringLiteral("invalid '%1'").arg(digits[i]);
+            }
+        }
+    }
+
+    // Then do the actual parse for range checking
     bool ok;
     parseValue(kind, text, &ok);
     if (ok) return {};
+
+    // Type-appropriate error messages
+    bool isFloatKind = (kind == NodeKind::Float || kind == NodeKind::Double);
+    if (isFloatKind)
+        return QStringLiteral("invalid number");
 
     // Return byte-capacity max based on type size
     const auto* m = kindMeta(kind);
     if (m && m->size > 0 && m->size <= 8) {
         uint64_t maxVal = (m->size == 8) ? ~0ULL : ((1ULL << (m->size * 8)) - 1);
-        return QStringLiteral("0x%1 max").arg(maxVal, m->size * 2, 16, QChar('0'));
+        return QStringLiteral("max 0x%1").arg(maxVal, m->size * 2, 16, QChar('0'));
     }
     return QStringLiteral("invalid");
 }

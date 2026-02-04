@@ -3,24 +3,29 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QFocusEvent>
+#include <QFile>
 #include <Qsci/qsciscintilla.h>
 #include "editor.h"
 #include "core.h"
 
 using namespace rcx;
 
-// Minimal provider for testing
+// Load first 0x6000 bytes of the test exe for realistic data
 static FileProvider makeTestProvider() {
-    QByteArray data(256, '\0');
-    // Write known values: uint16_t=23117 at offset 0, Hex64 at offset 8
-    uint16_t u16 = 23117;
-    memcpy(data.data(), &u16, 2);
-    uint64_t h64 = 0x4D5A900000000000ULL;
-    memcpy(data.data() + 8, &h64, 8);
+    QFile exe(QCoreApplication::applicationFilePath());
+    if (exe.open(QIODevice::ReadOnly)) {
+        QByteArray data = exe.read(0x6000);
+        exe.close();
+        if (data.size() >= 0x6000)
+            return FileProvider(data);
+    }
+    // Fallback: minimal PE header stub
+    QByteArray data(0x6000, '\0');
+    data[0] = 'M'; data[1] = 'Z';  // DOS signature
     return FileProvider(data);
 }
 
-// Build a simple tree with a struct containing a few fields
+// Build a tree covering 0x6000 bytes with Hex64 fields
 static NodeTree makeTestTree() {
     NodeTree tree;
     tree.baseAddress = 0;
@@ -33,6 +38,7 @@ static NodeTree makeTestTree() {
     int ri = tree.addNode(root);
     uint64_t rootId = tree.nodes[ri].id;
 
+    // First two fields for existing tests
     Node f1;
     f1.kind = NodeKind::UInt16;
     f1.name = "field_u16";
@@ -46,6 +52,17 @@ static NodeTree makeTestTree() {
     f2.parentId = rootId;
     f2.offset = 8;
     tree.addNode(f2);
+
+    // Fill remaining 0x6000 bytes with Hex64 fields (8 bytes each)
+    // Start at offset 16 (0x10), go to 0x6000
+    for (int off = 0x10; off < 0x6000; off += 8) {
+        Node f;
+        f.kind = NodeKind::Hex64;
+        f.name = QString("data_%1").arg(off, 4, 16, QChar('0'));
+        f.parentId = rootId;
+        f.offset = off;
+        tree.addNode(f);
+    }
 
     return tree;
 }
@@ -436,6 +453,93 @@ private slots:
         const LineMeta* lm = m_editor->metaForLine(1);
         QVERIFY(lm);
         QVERIFY(sel.contains(lm->nodeIdx));
+    }
+
+    // ── Test: value edit echoes to comment column ──
+    void testValueEditCommentEcho() {
+        m_editor->applyDocument(m_result);
+
+        // Begin value edit on line 1 (UInt16 field)
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 1);
+        QVERIFY(ok);
+        QVERIFY(m_editor->isEditing());
+
+        // Get the line text before any typing
+        QString lineBefore;
+        int len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+            lineBefore = QString::fromUtf8(buf.constData(), len).trimmed();
+        }
+
+        // Initial comment should contain "Enter=Save Esc=Cancel"
+        QVERIFY2(lineBefore.contains("Enter=Save"),
+                 qPrintable("Initial comment missing, got: " + lineBefore));
+
+        // Type a digit to trigger validateEditLive
+        QKeyEvent key5(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, "5");
+        QApplication::sendEvent(m_editor->scintilla(), &key5);
+        QApplication::processEvents();
+
+        // Get line text after typing
+        QString lineAfter;
+        len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+            lineAfter = QString::fromUtf8(buf.constData(), len).trimmed();
+        }
+
+        // Comment should show "!" prefix for invalid value
+        // Since "0x5a4d" + "5" = "0x5a4d5" = 370509 > 65535, it's invalid for UInt16
+        QVERIFY2(lineAfter.contains("! "),
+                 qPrintable("Comment should show '!' for invalid value, got: " + lineAfter));
+
+        // Cancel and reset
+        m_editor->cancelInlineEdit();
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: value validation shows error indicator ──
+    void testValueValidationError() {
+        m_editor->applyDocument(m_result);
+
+        // Begin value edit on line 1 (UInt16 field, value = 23117)
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 1);
+        QVERIFY(ok);
+
+        // Type "999" to make value invalid for UInt16 (appends to existing, making it too large)
+        // Original value 23117 -> typing "999" at end makes it invalid (23117999 > 65535)
+        const char* digits = "999";
+        for (int i = 0; digits[i]; i++) {
+            QKeyEvent key(QEvent::KeyPress, Qt::Key_9, Qt::NoModifier, QString(digits[i]));
+            QApplication::sendEvent(m_editor->scintilla(), &key);
+            QApplication::processEvents();
+        }
+
+        // Get line text - comment should show "! " prefix (error)
+        QString lineText;
+        int len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+            lineText = QString::fromUtf8(buf.constData(), len).trimmed();
+        }
+
+        // Comment should show "! " prefix for invalid value
+        QVERIFY2(lineText.contains("! "),
+                 qPrintable("Comment should show '! ' for invalid value, got: " + lineText));
+
+        // Cancel and reset
+        m_editor->cancelInlineEdit();
+        m_editor->applyDocument(m_result);
     }
 };
 

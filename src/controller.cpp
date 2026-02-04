@@ -569,6 +569,11 @@ void RcxController::batchChangeKind(const QVector<int>& nodeIndices, NodeKind ne
     }
     idSet = m_doc->tree.normalizePreferDescendants(idSet);
     if (idSet.isEmpty()) return;
+
+    // Clear selection before batch change
+    m_selIds.clear();
+    m_anchorLine = -1;
+
     m_doc->undoStack.beginMacro(QString("Change type of %1 nodes").arg(idSet.size()));
     for (uint64_t id : idSet) {
         int idx = m_doc->tree.indexOfId(id);

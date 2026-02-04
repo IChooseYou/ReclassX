@@ -473,8 +473,8 @@ enum class EditTarget { Name, Type, Value };
 // Column layout constants (shared with format.cpp span computation)
 inline constexpr int kFoldCol    = 3;   // 3-char fold indicator prefix per line
 inline constexpr int kColType    = 10;
-inline constexpr int kColName    = 24;
-inline constexpr int kColValue   = 22;
+inline constexpr int kColName    = 22;
+inline constexpr int kColValue   = 32;
 inline constexpr int kColComment = 28;  // "// Enter=Save Esc=Cancel" fits
 inline constexpr int kSepWidth   = 2;
 
