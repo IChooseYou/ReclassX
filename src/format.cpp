@@ -87,6 +87,14 @@ QString fmtStructHeader(const Node& node, int depth) {
            QStringLiteral(" ") + node.name + QStringLiteral(" {");
 }
 
+QString fmtStructHeaderWithBase(const Node& node, int depth, uint64_t baseAddress) {
+    // Format: "struct Name { base: 0x00400000" - single space after {
+    QString header = indent(depth) + typeName(node.kind).trimmed() +
+                     QStringLiteral(" ") + node.name + QStringLiteral(" { ");
+    QString baseHex = QStringLiteral("0x") + QString::number(baseAddress, 16).toUpper();
+    return header + QStringLiteral("base: ") + baseHex;
+}
+
 QString fmtStructFooter(const Node& node, int depth, int totalSize) {
     QString s = indent(depth) + QStringLiteral("};");
     if (totalSize > 0)
@@ -98,6 +106,21 @@ QString fmtStructFooter(const Node& node, int depth, int totalSize) {
 // ── Hex / ASCII preview ──
 
 static inline bool isAsciiPrintable(uint8_t c) { return c >= 0x20 && c <= 0x7E; }
+
+// Escape control characters for display
+static QString sanitizeString(const QString& s) {
+    QString out;
+    out.reserve(s.size() + 8);
+    for (QChar c : s) {
+        if (c == '\n')      out += QStringLiteral("\\n");
+        else if (c == '\r') out += QStringLiteral("\\r");
+        else if (c == '\t') out += QStringLiteral("\\t");
+        else if (c == '\\') out += QStringLiteral("\\\\");
+        else if (c < QChar(0x20)) out += QStringLiteral("\\x") + QString::number(c.unicode(), 16);
+        else out += c;
+    }
+    return out;
+}
 
 static QString bytesToAscii(const QByteArray& b, int slot) {
     QString out;
@@ -181,6 +204,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         int end = bytes.indexOf('\0');
         if (end >= 0) bytes.truncate(end);
         QString s = QString::fromUtf8(bytes);
+        if (display) s = sanitizeString(s);
         return display ? (QStringLiteral("\"") + s + QStringLiteral("\"")) : s;
     }
     case NodeKind::UTF16: {
@@ -189,6 +213,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
                                        bytes.size() / 2);
         int end = s.indexOf(QChar(0));
         if (end >= 0) s.truncate(end);
+        if (display) s = sanitizeString(s);
         return display ? (QStringLiteral("L\"") + s + QStringLiteral("\"")) : s;
     }
     default:
@@ -205,12 +230,12 @@ QString readValue(const Node& node, const Provider& prov,
 
 QString fmtNodeLine(const Node& node, const Provider& prov,
                     uint64_t addr, int depth, int subLine,
-                    const QString& comment) {
+                    const QString& comment, int colName) {
     QString ind = indent(depth);
     QString type = typeName(node.kind);
-    QString name = fit(node.name, COL_NAME);
+    QString name = fit(node.name, colName);
     // Blank prefix for continuation lines (same width as type+sep+name+sep)
-    const int prefixW = COL_TYPE + COL_NAME + 4; // 2 seps × 2 chars
+    const int prefixW = COL_TYPE + colName + 4; // 2 seps × 2 chars
 
     // Comment suffix (padded or empty)
     QString cmtSuffix = comment.isEmpty() ? QString(COL_COMMENT, ' ')
@@ -444,9 +469,48 @@ QString validateValue(NodeKind kind, const QString& text) {
     const auto* m = kindMeta(kind);
     if (m && m->size > 0 && m->size <= 8) {
         uint64_t maxVal = (m->size == 8) ? ~0ULL : ((1ULL << (m->size * 8)) - 1);
-        return QStringLiteral("max 0x%1").arg(maxVal, m->size * 2, 16, QChar('0'));
+        return QStringLiteral("too large! max=0x%1").arg(maxVal, m->size * 2, 16, QChar('0'));
     }
     return QStringLiteral("invalid");
+}
+
+// ── Base address validation (supports simple +/- equations) ──
+
+QString validateBaseAddress(const QString& text) {
+    QString s = text.trimmed();
+    if (s.isEmpty()) return QStringLiteral("empty");
+
+    int pos = 0;
+    bool firstTerm = true;
+
+    while (pos < s.size()) {
+        // Skip whitespace
+        while (pos < s.size() && s[pos].isSpace()) pos++;
+        if (pos >= s.size()) break;
+
+        // Check for +/- operator (except first term)
+        if (!firstTerm) {
+            if (s[pos] == '+' || s[pos] == '-') pos++;
+            else return QStringLiteral("invalid '%1'").arg(s[pos]);
+            while (pos < s.size() && s[pos].isSpace()) pos++;
+        }
+
+        // Skip 0x prefix if present
+        if (pos + 1 < s.size() && s[pos] == '0' && (s[pos+1] == 'x' || s[pos+1] == 'X'))
+            pos += 2;
+
+        // Must have at least one hex digit
+        int numStart = pos;
+        while (pos < s.size() && (s[pos].isDigit() ||
+               (s[pos] >= 'a' && s[pos] <= 'f') ||
+               (s[pos] >= 'A' && s[pos] <= 'F'))) pos++;
+
+        if (pos == numStart) return QStringLiteral("invalid");
+
+        firstTerm = false;
+    }
+
+    return {};
 }
 
 } // namespace rcx::fmt

@@ -427,10 +427,17 @@ struct LineMeta {
     bool     foldHead       = false;
     bool     foldCollapsed  = false;
     bool     isContinuation = false;
+    bool     isRootHeader   = false;  // true for top-level struct headers (base address editable)
     LineKind lineKind       = LineKind::Field;
     NodeKind nodeKind       = NodeKind::Int32;
     QString  offsetText;
     uint32_t markerMask     = 0;
+};
+
+// ── Layout Info ──
+
+struct LayoutInfo {
+    int nameW = 22;  // Effective name column width (default = kColName)
 };
 
 // ── ComposeResult ──
@@ -438,6 +445,7 @@ struct LineMeta {
 struct ComposeResult {
     QString            text;
     QVector<LineMeta>  meta;
+    LayoutInfo         layout;
 };
 
 // ── Command ──
@@ -468,15 +476,18 @@ struct ColumnSpan {
     bool valid = false;
 };
 
-enum class EditTarget { Name, Type, Value };
+enum class EditTarget { Name, Type, Value, BaseAddress };
 
 // Column layout constants (shared with format.cpp span computation)
-inline constexpr int kFoldCol    = 3;   // 3-char fold indicator prefix per line
-inline constexpr int kColType    = 10;
-inline constexpr int kColName    = 22;
-inline constexpr int kColValue   = 32;
-inline constexpr int kColComment = 28;  // "// Enter=Save Esc=Cancel" fits
-inline constexpr int kSepWidth   = 2;
+inline constexpr int kFoldCol     = 3;   // 3-char fold indicator prefix per line
+inline constexpr int kColType     = 10;
+inline constexpr int kColName     = 22;
+inline constexpr int kColValue    = 32;
+inline constexpr int kColComment  = 28;  // "// Enter=Save Esc=Cancel" fits
+inline constexpr int kColBaseAddr = 12;  // "0x" + up to 10 hex digits (40-bit address)
+inline constexpr int kSepWidth    = 2;
+inline constexpr int kMinNameW    = 8;   // Minimum name column width (matches ASCII preview)
+inline constexpr int kMaxNameW    = 22;  // Maximum name column width (= kColName)
 
 inline ColumnSpan typeSpanFor(const LineMeta& lm) {
     if (lm.lineKind != LineKind::Field || lm.isContinuation) return {};
@@ -484,7 +495,7 @@ inline ColumnSpan typeSpanFor(const LineMeta& lm) {
     return {ind, ind + kColType, true};
 }
 
-inline ColumnSpan nameSpanFor(const LineMeta& lm) {
+inline ColumnSpan nameSpanFor(const LineMeta& lm, int nameW = kColName) {
     if (lm.isContinuation || lm.lineKind != LineKind::Field) return {};
 
     int ind = kFoldCol + lm.depth * 3;
@@ -494,10 +505,10 @@ inline ColumnSpan nameSpanFor(const LineMeta& lm) {
     if (isHexPreview(lm.nodeKind))
         return {start, start + 8, true};
 
-    return {start, start + kColName, true};
+    return {start, start + nameW, true};
 }
 
-inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/) {
+inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/, int nameW = kColName) {
     if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
     int ind = kFoldCol + lm.depth * 3;
 
@@ -508,7 +519,7 @@ inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/) {
     if (lm.isContinuation) {
         int prefixW = isHexPad
             ? (kColType + kSepWidth + 8 + kSepWidth)
-            : (kColType + kColName + 4);
+            : (kColType + nameW + 4);
         int start = ind + prefixW;
         return {start, start + valWidth, true};
     }
@@ -516,11 +527,11 @@ inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/) {
 
     int start = isHexPad
         ? (ind + kColType + kSepWidth + 8 + kSepWidth)
-        : (ind + kColType + kSepWidth + kColName + kSepWidth);
+        : (ind + kColType + kSepWidth + nameW + kSepWidth);
     return {start, start + valWidth, true};
 }
 
-inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength) {
+inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength, int nameW = kColName) {
     if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
     int ind = kFoldCol + lm.depth * 3;
 
@@ -531,14 +542,41 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength) {
     if (lm.isContinuation) {
         int prefixW = isHexPad
             ? (kColType + kSepWidth + 8 + kSepWidth)
-            : (kColType + kColName + 4);
+            : (kColType + nameW + 4);
         start = ind + prefixW + valWidth;
     } else {
         start = isHexPad
             ? (ind + kColType + kSepWidth + 8 + kSepWidth + valWidth)
-            : (ind + kColType + kSepWidth + kColName + kSepWidth + valWidth);
+            : (ind + kColType + kSepWidth + nameW + kSepWidth + valWidth);
     }
     return {start, lineLength, start < lineLength};
+}
+
+// Base address span (only valid for root struct headers)
+// Line format: " - struct Name { base: 0x00400000"
+inline ColumnSpan baseAddressSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isRootHeader) return {};
+    // Find "base: " after the opening brace
+    int baseIdx = lineText.indexOf(QStringLiteral("base: "));
+    if (baseIdx < 0) return {};
+    int startPos = baseIdx + 6;  // after "base: "
+    // Value goes to end of line
+    int endPos = lineText.size();
+    while (endPos > startPos && lineText[endPos-1].isSpace())
+        endPos--;
+    if (endPos <= startPos) return {};
+    return {startPos, endPos, true};
+}
+
+// Full "base: 0x..." span for coloring (includes "base: " prefix)
+inline ColumnSpan baseAddressFullSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isRootHeader) return {};
+    int baseIdx = lineText.indexOf(QStringLiteral("base: "));
+    if (baseIdx < 0) return {};
+    int endPos = lineText.size();
+    while (endPos > baseIdx && lineText[endPos-1].isSpace())
+        endPos--;
+    return {baseIdx, endPos, true};
 }
 
 // ── ViewState ──
@@ -570,10 +608,12 @@ namespace fmt {
     QString fmtPointer64(uint64_t v);
     QString fmtNodeLine(const Node& node, const Provider& prov,
                         uint64_t addr, int depth, int subLine = 0,
-                        const QString& comment = {});
+                        const QString& comment = {}, int colName = kColName);
     QString fmtOffsetMargin(int64_t relativeOffset, bool isContinuation);
     QString fmtStructHeader(const Node& node, int depth);
+    QString fmtStructHeaderWithBase(const Node& node, int depth, uint64_t baseAddress);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
+    QString validateBaseAddress(const QString& text);
     QString indent(int depth);
     QString readValue(const Node& node, const Provider& prov,
                       uint64_t addr, int subLine);

@@ -145,6 +145,58 @@ void RcxController::connectEditor(RcxEditor* editor) {
         case EditTarget::Value:
             setNodeValue(nodeIdx, subLine, text);
             break;
+        case EditTarget::BaseAddress: {
+            QString s = text.trimmed();
+            // Support simple equations: 0x10+0x4, 0x100-0x10, etc.
+            uint64_t newBase = 0;
+            bool ok = true;
+            int pos = 0;
+            bool firstTerm = true;
+            bool adding = true;
+
+            while (pos < s.size() && ok) {
+                // Skip whitespace
+                while (pos < s.size() && s[pos].isSpace()) pos++;
+                if (pos >= s.size()) break;
+
+                // Check for +/- operator (except first term)
+                if (!firstTerm) {
+                    if (s[pos] == '+') { adding = true; pos++; }
+                    else if (s[pos] == '-') { adding = false; pos++; }
+                    else { ok = false; break; }
+                    while (pos < s.size() && s[pos].isSpace()) pos++;
+                }
+
+                // Parse hex number (with or without 0x prefix)
+                int start = pos;
+                bool hasPrefix = (pos + 1 < s.size() &&
+                    s[pos] == '0' && (s[pos+1] == 'x' || s[pos+1] == 'X'));
+                if (hasPrefix) pos += 2;
+
+                int numStart = pos;
+                while (pos < s.size() && (s[pos].isDigit() ||
+                       (s[pos] >= 'a' && s[pos] <= 'f') ||
+                       (s[pos] >= 'A' && s[pos] <= 'F'))) pos++;
+
+                if (pos == numStart) { ok = false; break; }
+
+                QString numStr = s.mid(numStart, pos - numStart);
+                uint64_t val = numStr.toULongLong(&ok, 16);
+                if (!ok) break;
+
+                if (adding) newBase += val;
+                else newBase -= val;
+
+                firstTerm = false;
+            }
+
+            if (ok && newBase != m_doc->tree.baseAddress) {
+                uint64_t oldBase = m_doc->tree.baseAddress;
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::ChangeBase{oldBase, newBase}));
+            }
+            break;
+        }
         }
         // Always refresh to restore canonical text (handles parse failures, no-ops, etc.)
         refresh();
