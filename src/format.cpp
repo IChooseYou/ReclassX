@@ -107,6 +107,21 @@ QString fmtStructFooter(const Node& node, int depth, int totalSize) {
 
 static inline bool isAsciiPrintable(uint8_t c) { return c >= 0x20 && c <= 0x7E; }
 
+// Escape control characters for display
+static QString sanitizeString(const QString& s) {
+    QString out;
+    out.reserve(s.size() + 8);
+    for (QChar c : s) {
+        if (c == '\n')      out += QStringLiteral("\\n");
+        else if (c == '\r') out += QStringLiteral("\\r");
+        else if (c == '\t') out += QStringLiteral("\\t");
+        else if (c == '\\') out += QStringLiteral("\\\\");
+        else if (c < QChar(0x20)) out += QStringLiteral("\\x") + QString::number(c.unicode(), 16);
+        else out += c;
+    }
+    return out;
+}
+
 static QString bytesToAscii(const QByteArray& b, int slot) {
     QString out;
     out.reserve(slot);
@@ -189,6 +204,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         int end = bytes.indexOf('\0');
         if (end >= 0) bytes.truncate(end);
         QString s = QString::fromUtf8(bytes);
+        if (display) s = sanitizeString(s);
         return display ? (QStringLiteral("\"") + s + QStringLiteral("\"")) : s;
     }
     case NodeKind::UTF16: {
@@ -197,6 +213,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
                                        bytes.size() / 2);
         int end = s.indexOf(QChar(0));
         if (end >= 0) s.truncate(end);
+        if (display) s = sanitizeString(s);
         return display ? (QStringLiteral("L\"") + s + QStringLiteral("\"")) : s;
     }
     default:

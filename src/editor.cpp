@@ -1143,16 +1143,7 @@ void RcxEditor::showTypeListFiltered(const QString& filter) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)' ');
     m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
                          (uintptr_t)1, list.constData());
-
-    // Set arrow cursor on the autocomplete popup (it defaults to pointing hand)
-    for (QObject* child : m_sci->children()) {
-        if (auto* w = qobject_cast<QWidget*>(child)) {
-            if (w->isVisible() && w->windowFlags() & Qt::Popup) {
-                w->setCursor(Qt::ArrowCursor);
-                break;
-            }
-        }
-    }
+    // Arrow cursor for popup is handled by applyHoverCursor() via isListActive()
 }
 
 void RcxEditor::updateTypeListFilter() {
@@ -1239,6 +1230,17 @@ void RcxEditor::applyHoverCursor() {
 
     // Mouse left viewport - set Arrow
     if (!m_hoverInside || !m_sci->viewport()->underMouse()) {
+        if (!m_cursorOverridden) {
+            QApplication::setOverrideCursor(Qt::ArrowCursor);
+            m_cursorOverridden = true;
+        } else {
+            QApplication::changeOverrideCursor(Qt::ArrowCursor);
+        }
+        return;
+    }
+
+    // If autocomplete/user list popup is active, use arrow cursor
+    if (m_sci->isListActive()) {
         if (!m_cursorOverridden) {
             QApplication::setOverrideCursor(Qt::ArrowCursor);
             m_cursorOverridden = true;
