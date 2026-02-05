@@ -326,17 +326,17 @@ private slots:
         auto ts = rcx::typeSpanFor(lm);
         QVERIFY(ts.valid);
         QCOMPARE(ts.start, 6);
-        QCOMPARE(ts.end, 16);   // 6 + 10
+        QCOMPARE(ts.end, 20);   // 6 + 14 (kColType)
 
         auto ns = rcx::nameSpanFor(lm);
         QVERIFY(ns.valid);
-        QCOMPARE(ns.start, 18); // 6 + 10 + 2
-        QCOMPARE(ns.end, 42);   // 18 + 24
+        QCOMPARE(ns.start, 21); // 6 + 14 + 1 (kSepWidth)
+        QCOMPARE(ns.end, 43);   // 21 + 22 (kColName)
 
-        auto vs = rcx::valueSpanFor(lm, 60);
+        auto vs = rcx::valueSpanFor(lm, 100);
         QVERIFY(vs.valid);
-        QCOMPARE(vs.start, 44); // 18 + 24 + 2
-        QCOMPARE(vs.end, 60);
+        QCOMPARE(vs.start, 44); // 21 + 22 + 1 (kSepWidth)
+        QCOMPARE(vs.end, 76);   // 44 + 32 (kColValue)
     }
 
     void testColumnSpan_continuation() {
@@ -349,10 +349,10 @@ private slots:
         QVERIFY(!rcx::typeSpanFor(lm).valid);
         QVERIFY(!rcx::nameSpanFor(lm).valid);
 
-        auto vs = rcx::valueSpanFor(lm, 60);
+        auto vs = rcx::valueSpanFor(lm, 100);
         QVERIFY(vs.valid);
-        QCOMPARE(vs.start, 6 + 10 + 24 + 4);  // kFoldCol+indent + COL_TYPE + COL_NAME + 4
-        QCOMPARE(vs.end, 60);
+        QCOMPARE(vs.start, 6 + 14 + 22 + 2);  // kFoldCol+indent + kColType(14) + kColName(22) + 2*kSepWidth
+        QCOMPARE(vs.end, 44 + 32);   // start + kColValue
     }
 
     void testColumnSpan_headerFooter() {
@@ -382,17 +382,17 @@ private slots:
         auto ts = rcx::typeSpanFor(lm);
         QVERIFY(ts.valid);
         QCOMPARE(ts.start, 3);
-        QCOMPARE(ts.end, 13);   // 3 + 10
+        QCOMPARE(ts.end, 17);   // 3 + 14 (kColType)
 
         auto ns = rcx::nameSpanFor(lm);
         QVERIFY(ns.valid);
-        QCOMPARE(ns.start, 15); // 3 + 10 + 2
-        QCOMPARE(ns.end, 39);   // 15 + 24
+        QCOMPARE(ns.start, 18); // 3 + 14 + 1 (kSepWidth)
+        QCOMPARE(ns.end, 40);   // 18 + 22 (kColName)
 
-        auto vs = rcx::valueSpanFor(lm, 50);
+        auto vs = rcx::valueSpanFor(lm, 100);
         QVERIFY(vs.valid);
-        QCOMPARE(vs.start, 41); // 15 + 24 + 2
-        QCOMPARE(vs.end, 50);
+        QCOMPARE(vs.start, 41); // 18 + 22 + 1 (kSepWidth)
+        QCOMPARE(vs.end, 73);   // 41 + 32 (kColValue)
     }
 
     void testNodeIdJsonRoundTrip() {
@@ -474,6 +474,38 @@ private slots:
         empty.parentId = 0;
         int ei = tree3.addNode(empty);
         QCOMPARE(tree3.structSpan(tree3.nodes[ei].id), 0);
+
+        // Primitive array (no children) should return its declared size
+        NodeTree tree4;
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "data";
+        arr.parentId = 0;
+        arr.arrayLen = 16;
+        arr.elementKind = NodeKind::UInt32;  // 16 * 4 = 64 bytes
+        int ai = tree4.addNode(arr);
+        QCOMPARE(tree4.structSpan(tree4.nodes[ai].id), 64);
+
+        // Struct containing primitive array - span includes array size
+        NodeTree tree5;
+        Node container;
+        container.kind = NodeKind::Struct;
+        container.name = "Container";
+        container.parentId = 0;
+        int ci = tree5.addNode(container);
+        uint64_t containerId = tree5.nodes[ci].id;
+
+        Node arr2;
+        arr2.kind = NodeKind::Array;
+        arr2.name = "items";
+        arr2.parentId = containerId;
+        arr2.offset = 8;
+        arr2.arrayLen = 10;
+        arr2.elementKind = NodeKind::UInt64;  // 10 * 8 = 80 bytes
+        tree5.addNode(arr2);
+
+        // Container span = array offset (8) + array size (80) = 88
+        QCOMPARE(tree5.structSpan(containerId), 88);
     }
     void testNormalizePreferAncestors() {
         using namespace rcx;
