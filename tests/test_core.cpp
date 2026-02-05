@@ -330,13 +330,13 @@ private slots:
 
         auto ns = rcx::nameSpanFor(lm);
         QVERIFY(ns.valid);
-        QCOMPARE(ns.start, 22); // 6 + 14 + 2
-        QCOMPARE(ns.end, 44);   // 22 + 22 (kColName)
+        QCOMPARE(ns.start, 21); // 6 + 14 + 1 (kSepWidth)
+        QCOMPARE(ns.end, 43);   // 21 + 22 (kColName)
 
         auto vs = rcx::valueSpanFor(lm, 100);
         QVERIFY(vs.valid);
-        QCOMPARE(vs.start, 46); // 22 + 22 + 2
-        QCOMPARE(vs.end, 78);   // 46 + 32 (kColValue)
+        QCOMPARE(vs.start, 44); // 21 + 22 + 1 (kSepWidth)
+        QCOMPARE(vs.end, 76);   // 44 + 32 (kColValue)
     }
 
     void testColumnSpan_continuation() {
@@ -351,8 +351,8 @@ private slots:
 
         auto vs = rcx::valueSpanFor(lm, 100);
         QVERIFY(vs.valid);
-        QCOMPARE(vs.start, 6 + 14 + 22 + 4);  // kFoldCol+indent + kColType(14) + kColName(22) + 4
-        QCOMPARE(vs.end, 46 + 32);   // start + kColValue
+        QCOMPARE(vs.start, 6 + 14 + 22 + 2);  // kFoldCol+indent + kColType(14) + kColName(22) + 2*kSepWidth
+        QCOMPARE(vs.end, 44 + 32);   // start + kColValue
     }
 
     void testColumnSpan_headerFooter() {
@@ -386,13 +386,13 @@ private slots:
 
         auto ns = rcx::nameSpanFor(lm);
         QVERIFY(ns.valid);
-        QCOMPARE(ns.start, 19); // 3 + 14 + 2
-        QCOMPARE(ns.end, 41);   // 19 + 22 (kColName)
+        QCOMPARE(ns.start, 18); // 3 + 14 + 1 (kSepWidth)
+        QCOMPARE(ns.end, 40);   // 18 + 22 (kColName)
 
         auto vs = rcx::valueSpanFor(lm, 100);
         QVERIFY(vs.valid);
-        QCOMPARE(vs.start, 43); // 19 + 22 + 2
-        QCOMPARE(vs.end, 75);   // 43 + 32 (kColValue)
+        QCOMPARE(vs.start, 41); // 18 + 22 + 1 (kSepWidth)
+        QCOMPARE(vs.end, 73);   // 41 + 32 (kColValue)
     }
 
     void testNodeIdJsonRoundTrip() {
@@ -474,6 +474,38 @@ private slots:
         empty.parentId = 0;
         int ei = tree3.addNode(empty);
         QCOMPARE(tree3.structSpan(tree3.nodes[ei].id), 0);
+
+        // Primitive array (no children) should return its declared size
+        NodeTree tree4;
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "data";
+        arr.parentId = 0;
+        arr.arrayLen = 16;
+        arr.elementKind = NodeKind::UInt32;  // 16 * 4 = 64 bytes
+        int ai = tree4.addNode(arr);
+        QCOMPARE(tree4.structSpan(tree4.nodes[ai].id), 64);
+
+        // Struct containing primitive array - span includes array size
+        NodeTree tree5;
+        Node container;
+        container.kind = NodeKind::Struct;
+        container.name = "Container";
+        container.parentId = 0;
+        int ci = tree5.addNode(container);
+        uint64_t containerId = tree5.nodes[ci].id;
+
+        Node arr2;
+        arr2.kind = NodeKind::Array;
+        arr2.name = "items";
+        arr2.parentId = containerId;
+        arr2.offset = 8;
+        arr2.arrayLen = 10;
+        arr2.elementKind = NodeKind::UInt64;  // 10 * 8 = 80 bytes
+        tree5.addNode(arr2);
+
+        // Container span = array offset (8) + array size (80) = 88
+        QCOMPARE(tree5.structSpan(containerId), 88);
     }
     void testNormalizePreferAncestors() {
         using namespace rcx;

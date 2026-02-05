@@ -94,14 +94,14 @@ private slots:
 
     void testParseValueHex32() {
         bool ok;
-        // Hex parsing produces raw bytes (no endian conversion)
+        // Hex parsing produces native-endian bytes (matches display which reads native-endian)
         QByteArray b = fmt::parseValue(NodeKind::Hex32, "DEADBEEF", &ok);
         QVERIFY(ok);
         QCOMPARE(b.size(), 4);
-        QCOMPARE((uint8_t)b[0], (uint8_t)0xDE);
-        QCOMPARE((uint8_t)b[1], (uint8_t)0xAD);
-        QCOMPARE((uint8_t)b[2], (uint8_t)0xBE);
-        QCOMPARE((uint8_t)b[3], (uint8_t)0xEF);
+        // Value 0xDEADBEEF stored as native-endian (little-endian on x86)
+        uint32_t v;
+        memcpy(&v, b.data(), 4);
+        QCOMPARE(v, (uint32_t)0xDEADBEEF);
     }
 
     void testParseValueBool() {
@@ -122,13 +122,12 @@ private slots:
 
     void testParseValueHex0xPrefix() {
         bool ok;
-        // Hex32 with 0x prefix should work (raw bytes, no endian conversion)
+        // Hex32 with 0x prefix should work (native-endian, matches display)
         QByteArray b = fmt::parseValue(NodeKind::Hex32, "0xDEADBEEF", &ok);
         QVERIFY(ok);
-        QCOMPARE((uint8_t)b[0], (uint8_t)0xDE);
-        QCOMPARE((uint8_t)b[1], (uint8_t)0xAD);
-        QCOMPARE((uint8_t)b[2], (uint8_t)0xBE);
-        QCOMPARE((uint8_t)b[3], (uint8_t)0xEF);
+        uint32_t v32;
+        memcpy(&v32, b.data(), 4);
+        QCOMPARE(v32, (uint32_t)0xDEADBEEF);
 
         // Pointer64 with 0x prefix
         b = fmt::parseValue(NodeKind::Pointer64, "0x0000000000400000", &ok);
@@ -174,6 +173,44 @@ private slots:
 
         // Hex16: 0x1FFFF exceeds uint16_t → should fail
         fmt::parseValue(NodeKind::Hex16, "1FFFF", &ok);
+        QVERIFY(!ok);
+    }
+
+    void testSignedHexRoundTrip() {
+        bool ok;
+        // Int8: 0xFF should parse as -1 (two's complement)
+        QByteArray b = fmt::parseValue(NodeKind::Int8, "0xFF", &ok);
+        QVERIFY(ok);
+        int8_t sv8;
+        memcpy(&sv8, b.data(), 1);
+        QCOMPARE(sv8, (int8_t)-1);
+
+        // Int8: 0x80 should parse as -128
+        b = fmt::parseValue(NodeKind::Int8, "0x80", &ok);
+        QVERIFY(ok);
+        memcpy(&sv8, b.data(), 1);
+        QCOMPARE(sv8, (int8_t)-128);
+
+        // Int16: 0xFFFF should parse as -1
+        b = fmt::parseValue(NodeKind::Int16, "0xFFFF", &ok);
+        QVERIFY(ok);
+        int16_t sv16;
+        memcpy(&sv16, b.data(), 2);
+        QCOMPARE(sv16, (int16_t)-1);
+
+        // Int32: 0xFFFFFFFF should parse as -1
+        b = fmt::parseValue(NodeKind::Int32, "0xFFFFFFFF", &ok);
+        QVERIFY(ok);
+        int32_t sv32;
+        memcpy(&sv32, b.data(), 4);
+        QCOMPARE(sv32, (int32_t)-1);
+
+        // Int8: 0x1FF should fail (exceeds byte range)
+        fmt::parseValue(NodeKind::Int8, "0x1FF", &ok);
+        QVERIFY(!ok);
+
+        // Int16: 0x1FFFF should fail (exceeds 16-bit range)
+        fmt::parseValue(NodeKind::Int16, "0x1FFFF", &ok);
         QVERIFY(!ok);
     }
 

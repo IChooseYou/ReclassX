@@ -382,6 +382,12 @@ struct NodeTree {
 
     int structSpan(uint64_t structId,
                    const QHash<uint64_t, QVector<int>>* childMap = nullptr) const {
+        int idx = indexOfId(structId);
+        if (idx < 0) return 0;
+
+        const Node& node = nodes[idx];
+        int declaredSize = node.byteSize();
+
         int maxEnd = 0;
         QVector<int> kids = childMap ? childMap->value(structId) : childrenOf(structId);
         for (int ci : kids) {
@@ -391,7 +397,8 @@ struct NodeTree {
             int end = c.offset + sz;
             if (end > maxEnd) maxEnd = end;
         }
-        return maxEnd;
+
+        return qMax(declaredSize, maxEnd);
     }
 
     // Batch selection normalizers
@@ -480,11 +487,15 @@ namespace cmd {
                          QVector<OffsetAdj> offAdjs; };
     struct ChangeBase  { uint64_t oldBase, newBase; };
     struct WriteBytes  { uint64_t addr; QByteArray oldBytes, newBytes; };
+    struct ChangeArrayMeta { uint64_t nodeId;
+                             NodeKind oldElementKind, newElementKind;
+                             int oldArrayLen, newArrayLen; };
 }
 
 using Command = std::variant<
     cmd::ChangeKind, cmd::Rename, cmd::Collapse,
-    cmd::Insert, cmd::Remove, cmd::ChangeBase, cmd::WriteBytes
+    cmd::Insert, cmd::Remove, cmd::ChangeBase, cmd::WriteBytes,
+    cmd::ChangeArrayMeta
 >;
 
 // ── Column spans (for inline editing) ──
@@ -504,7 +515,7 @@ inline constexpr int kColName     = 22;
 inline constexpr int kColValue    = 32;
 inline constexpr int kColComment  = 28;  // "// Enter=Save Esc=Cancel" fits
 inline constexpr int kColBaseAddr = 12;  // "0x" + up to 10 hex digits (40-bit address)
-inline constexpr int kSepWidth    = 2;
+inline constexpr int kSepWidth    = 1;
 inline constexpr int kMinTypeW    = 8;   // Minimum type column width (fits "uint64_t")
 inline constexpr int kMaxTypeW    = 14;  // Maximum type column width (fits "uint64_t[999]")
 inline constexpr int kMinNameW    = 8;   // Minimum name column width (matches ASCII preview)
@@ -541,7 +552,7 @@ inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/, int typeW
     if (lm.isContinuation) {
         int prefixW = isHexPad
             ? (typeW + kSepWidth + 8 + kSepWidth)
-            : (typeW + nameW + 4);
+            : (typeW + nameW + 2 * kSepWidth);
         int start = ind + prefixW;
         return {start, start + valWidth, true};
     }
@@ -564,7 +575,7 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength, int typeW =
     if (lm.isContinuation) {
         int prefixW = isHexPad
             ? (typeW + kSepWidth + 8 + kSepWidth)
-            : (typeW + nameW + 4);
+            : (typeW + nameW + 2 * kSepWidth);
         start = ind + prefixW + valWidth;
     } else {
         start = isHexPad
@@ -575,13 +586,13 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength, int typeW =
 }
 
 // Base address span (only valid for root struct headers)
-// Line format: " - struct Name { base: 0x00400000"
+// Line format: " - struct Name { // base: 0x00400000"
 inline ColumnSpan baseAddressSpanFor(const LineMeta& lm, const QString& lineText) {
     if (lm.lineKind != LineKind::Header || !lm.isRootHeader) return {};
-    // Find "base: " after the opening brace
-    int baseIdx = lineText.indexOf(QStringLiteral("base: "));
+    // Find "// base: " after the opening brace
+    int baseIdx = lineText.indexOf(QStringLiteral("// base: "));
     if (baseIdx < 0) return {};
-    int startPos = baseIdx + 6;  // after "base: "
+    int startPos = baseIdx + 9;  // after "// base: "
     // Value goes to end of line
     int endPos = lineText.size();
     while (endPos > startPos && lineText[endPos-1].isSpace())
@@ -590,10 +601,10 @@ inline ColumnSpan baseAddressSpanFor(const LineMeta& lm, const QString& lineText
     return {startPos, endPos, true};
 }
 
-// Full "base: 0x..." span for coloring (includes "base: " prefix)
+// Full "// base: 0x..." span for coloring (includes "// base: " prefix)
 inline ColumnSpan baseAddressFullSpanFor(const LineMeta& lm, const QString& lineText) {
     if (lm.lineKind != LineKind::Header || !lm.isRootHeader) return {};
-    int baseIdx = lineText.indexOf(QStringLiteral("base: "));
+    int baseIdx = lineText.indexOf(QStringLiteral("// base: "));
     if (baseIdx < 0) return {};
     int endPos = lineText.size();
     while (endPos > baseIdx && lineText[endPos-1].isSpace())

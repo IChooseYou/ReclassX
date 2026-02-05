@@ -140,7 +140,7 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_BASE_ADDR, 17 /*INDIC_TEXTFORE*/);
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_BASE_ADDR, QColor("#6a9955"));
+                         IND_BASE_ADDR, QColor("#5a8248"));
 
     // Hover span indicator — blue text like a link
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
@@ -517,10 +517,8 @@ void RcxEditor::applyBaseAddressColoring(const QVector<LineMeta>& meta) {
         QString lineText = getLineText(m_sci, i);
         ColumnSpan span = baseAddressFullSpanFor(lm, lineText);
         if (!span.valid) continue;
-        long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
-                                              (unsigned long)i);
-        long posA = lineStart + span.start;
-        long posB = lineStart + span.end;
+        long posA = posFromCol(m_sci, i, span.start);
+        long posB = posFromCol(m_sci, i, span.end);
         if (posB > posA)
             m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, posA, posB - posA);
     }
@@ -1381,11 +1379,9 @@ void RcxEditor::setEditComment(const QString& comment) {
     QString formatted = QStringLiteral("//") + comment;
     QString padded = formatted.leftJustified(availWidth, ' ').left(availWidth);
 
-    // Use direct position calculation from line start
-    long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
-                                          (unsigned long)m_editState.line);
-    long posA = lineStart + startCol;
-    long posB = lineStart + endCol;
+    // Use UTF-8 safe column-to-position conversion
+    long posA = posFromCol(m_sci, m_editState.line, startCol);
+    long posB = posFromCol(m_sci, m_editState.line, endCol);
 
     QByteArray utf8 = padded.toUtf8();
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, posA);

@@ -151,13 +151,12 @@ void RcxController::connectEditor(RcxEditor* editor) {
                     bool typeOk;
                     NodeKind elemKind = kindFromTypeName(elemTypeName, &typeOk);
                     if (typeOk && nodeIdx < m_doc->tree.nodes.size()) {
-                        Node& node = m_doc->tree.nodes[nodeIdx];
+                        const Node& node = m_doc->tree.nodes[nodeIdx];
                         if (node.kind == NodeKind::Array) {
-                            // Update element kind and count (no undo for now)
-                            node.elementKind = elemKind;
-                            node.arrayLen = newCount;
-                            if (node.viewIndex >= newCount)
-                                node.viewIndex = qMax(0, newCount - 1);
+                            m_doc->undoStack.push(new RcxCommand(this,
+                                cmd::ChangeArrayMeta{node.id,
+                                    node.elementKind, elemKind,
+                                    node.arrayLen, newCount}));
                         }
                     }
                 }
@@ -446,6 +445,14 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
         } else if constexpr (std::is_same_v<T, cmd::WriteBytes>) {
             const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
             m_doc->provider->writeBytes(c.addr, bytes);
+        } else if constexpr (std::is_same_v<T, cmd::ChangeArrayMeta>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0) {
+                tree.nodes[idx].elementKind = isUndo ? c.oldElementKind : c.newElementKind;
+                tree.nodes[idx].arrayLen = isUndo ? c.oldArrayLen : c.newArrayLen;
+                if (tree.nodes[idx].viewIndex >= tree.nodes[idx].arrayLen)
+                    tree.nodes[idx].viewIndex = qMax(0, tree.nodes[idx].arrayLen - 1);
+            }
         }
     }, command);
 

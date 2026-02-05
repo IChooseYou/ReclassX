@@ -18,6 +18,7 @@ struct ComposeState {
     int                currentLine = 0;
     int                typeW       = kColType;  // global type column width (fallback)
     int                nameW       = kColName;  // global name column width (fallback)
+    bool               baseEmitted = false;     // only first root struct shows base address
 
     // Precomputed for O(1) lookups
     QHash<uint64_t, QVector<int>> childMap;
@@ -206,7 +207,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.foldCollapsed = node.collapsed;
         lm.foldLevel  = computeFoldLevel(depth, true);
         lm.markerMask = (1u << M_STRUCT_BG);
-        lm.isRootHeader = (node.parentId == 0 && node.kind == NodeKind::Struct);
+        lm.isRootHeader = (node.parentId == 0 && node.kind == NodeKind::Struct && !state.baseEmitted);
+        if (lm.isRootHeader) state.baseEmitted = true;
 
         QString headerText;
         if (node.kind == NodeKind::Array) {
@@ -350,7 +352,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
         }
         maxTypeLen = qMax(maxTypeLen, typeName.size());
     }
-    state.typeW = qBound(kMinTypeW, maxTypeLen + 1, kMaxTypeW);
+    state.typeW = qBound(kMinTypeW, maxTypeLen, kMaxTypeW);
 
     // Compute effective name column width from longest name
     int maxNameLen = kMinNameW;
@@ -361,7 +363,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
         if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) continue;
         maxNameLen = qMax(maxNameLen, node.name.size());
     }
-    state.nameW = qBound(kMinNameW, maxNameLen + 1, kMaxNameW);
+    state.nameW = qBound(kMinNameW, maxNameLen, kMaxNameW);
 
     // Pre-compute per-scope widths (each container gets widths based on direct children only)
     for (int i = 0; i < tree.nodes.size(); i++) {
@@ -375,24 +377,43 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
         for (int childIdx : state.childMap.value(container.id)) {
             const Node& child = tree.nodes[childIdx];
 
+            // Skip containers - their headers don't use columnar layout
+            if (child.kind == NodeKind::Struct || child.kind == NodeKind::Array)
+                continue;
+
             // Type width
-            QString childTypeName;
-            if (child.kind == NodeKind::Array) {
-                childTypeName = fmt::arrayTypeName(child.elementKind, child.arrayLen);
-            } else {
-                childTypeName = fmt::typeNameRaw(child.kind);
-            }
+            QString childTypeName = fmt::typeNameRaw(child.kind);
             scopeMaxType = qMax(scopeMaxType, childTypeName.size());
 
-            // Name width (skip hex/padding and containers)
-            if (!isHexPreview(child.kind) &&
-                child.kind != NodeKind::Struct && child.kind != NodeKind::Array) {
+            // Name width (skip hex/padding)
+            if (!isHexPreview(child.kind)) {
                 scopeMaxName = qMax(scopeMaxName, child.name.size());
             }
         }
 
-        state.scopeTypeW[container.id] = qBound(kMinTypeW, scopeMaxType + 1, kMaxTypeW);
-        state.scopeNameW[container.id] = qBound(kMinNameW, scopeMaxName + 1, kMaxNameW);
+        state.scopeTypeW[container.id] = qBound(kMinTypeW, scopeMaxType, kMaxTypeW);
+        state.scopeNameW[container.id] = qBound(kMinNameW, scopeMaxName, kMaxNameW);
+    }
+
+    // Compute scope widths for root level (parentId == 0)
+    {
+        int rootMaxType = kMinTypeW;
+        int rootMaxName = kMinNameW;
+        for (int childIdx : state.childMap.value(0)) {
+            const Node& child = tree.nodes[childIdx];
+
+            // Skip containers - their headers don't use columnar layout
+            if (child.kind == NodeKind::Struct || child.kind == NodeKind::Array)
+                continue;
+
+            QString childTypeName = fmt::typeNameRaw(child.kind);
+            rootMaxType = qMax(rootMaxType, childTypeName.size());
+            if (!isHexPreview(child.kind)) {
+                rootMaxName = qMax(rootMaxName, child.name.size());
+            }
+        }
+        state.scopeTypeW[0] = qBound(kMinTypeW, rootMaxType, kMaxTypeW);
+        state.scopeNameW[0] = qBound(kMinNameW, rootMaxName, kMaxNameW);
     }
 
     QVector<int> roots = state.childMap.value(0);
