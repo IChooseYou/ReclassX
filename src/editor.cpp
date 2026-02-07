@@ -677,6 +677,8 @@ void RcxEditor::applyCommandRowPills() {
 // ── Shared inline-edit shutdown ──
 
 RcxEditor::EndEditInfo RcxEditor::endInlineEdit() {
+    // Dismiss any open user list / autocomplete popup
+    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCCANCEL);
     // Clear edit comment and error marker before deactivating
     if (m_editState.target == EditTarget::Value) {
         setEditComment({});  // Clear to spaces

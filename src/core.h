@@ -603,6 +603,7 @@ inline ColumnSpan commandRow2TypeSpan(const QString& lineText) {
 }
 
 inline ColumnSpan commandRow2NameSpan(const QString& lineText) {
+    // Format: "keyword name {" — extract just the name part (before " {")
     int start = 0;
     while (start < lineText.size() && lineText[start].isSpace()) start++;
     int space = lineText.indexOf(' ', start);
@@ -610,7 +611,9 @@ inline ColumnSpan commandRow2NameSpan(const QString& lineText) {
     int nameStart = space + 1;
     while (nameStart < lineText.size() && lineText[nameStart].isSpace()) nameStart++;
     if (nameStart >= lineText.size()) return {};
-    int nameEnd = lineText.size();
+    // Stop before trailing " {"
+    int nameEnd = lineText.indexOf(QStringLiteral(" {"), nameStart);
+    if (nameEnd < 0) nameEnd = lineText.size();
     while (nameEnd > nameStart && lineText[nameEnd - 1].isSpace()) nameEnd--;
     if (nameEnd <= nameStart) return {};
     return {nameStart, nameEnd, true};

@@ -222,6 +222,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         state.baseEmitted = true;
 
     // Header line (skip for array element structs and root struct)
+    // Root struct header is on CommandRow2 (type + name + {)
     if (!isArrayChild && !isRootHeader) {
         // Get per-scope widths for this header's parent scope
         int typeW = state.effectiveTypeW(scopeId);
@@ -263,8 +264,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
             return tree.nodes[a].offset < tree.nodes[b].offset;
         });
 
-        // Root struct children compose at same depth (no header to indent from)
-        int childDepth = isRootHeader ? depth : depth + 1;
+        int childDepth = depth + 1;
 
         // For arrays, render children as condensed (no header/footer for struct elements)
         bool childrenAreArrayElements = (node.kind == NodeKind::Array);
@@ -278,8 +278,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         }
     }
 
-    // Footer line: skip when collapsed, for array element structs, or for root struct
-    if (!isArrayChild && !isRootHeader && !node.collapsed) {
+    // Footer line: skip when collapsed or for array element structs
+    if (!isArrayChild && (!node.collapsed || isRootHeader)) {
         LineMeta lm;
         lm.nodeIdx   = nodeIdx;
         lm.nodeId    = node.id;
@@ -501,7 +501,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         lm.markerMask = 0;
         lm.effectiveTypeW = state.typeW;
         lm.effectiveNameW = state.nameW;
-        state.emitLine(QStringLiteral("struct <no class>"), lm);
+        state.emitLine(QStringLiteral("struct <no class> {"), lm);
     }
 
     QVector<int> roots = state.childMap.value(0);

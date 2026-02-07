@@ -1026,10 +1026,10 @@ private slots:
         m_editor->applyDocument(result);
         QApplication::processEvents();
 
-        // Find header line
+        // Find a non-root header line (root header has no editable name/type spans)
         int headerLine = -1;
         for (int i = 0; i < result.meta.size(); i++) {
-            if (result.meta[i].lineKind == LineKind::Header) {
+            if (result.meta[i].lineKind == LineKind::Header && !result.meta[i].isRootHeader) {
                 headerLine = i;
                 break;
             }

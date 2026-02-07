@@ -1408,13 +1408,13 @@ void RcxController::updateCommandRow() {
         if (n.parentId == 0 && n.kind == NodeKind::Struct) {
             QString keyword = n.resolvedClassKeyword();
             QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
-            row2 = QStringLiteral("%1 %2")
+            row2 = QStringLiteral("%1 %2 {")
                 .arg(keyword, className);
             break;
         }
     }
     if (row2.isEmpty())
-        row2 = QStringLiteral("struct <no class>");
+        row2 = QStringLiteral("struct <no class> {");
 
     for (auto* ed : m_editors) {
         ed->setCommandRowText(row);

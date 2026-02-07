@@ -35,8 +35,8 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + 2 fields = 4 lines (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 4);
+        // CommandRow + CommandRow2 + 2 fields + root footer = 5
+        QCOMPARE(result.meta.size(), 5);
 
         // Line 0 is CommandRow
         QCOMPARE(result.meta[0].lineKind, LineKind::CommandRow);
@@ -44,13 +44,18 @@ private slots:
         // Line 1 is CommandRow2
         QCOMPARE(result.meta[1].lineKind, LineKind::CommandRow2);
 
-        // Fields at depth 0 (root struct suppressed)
+        // Fields at depth 1
         QVERIFY(!result.meta[2].foldHead);
+        QCOMPARE(result.meta[2].depth, 1);
         QVERIFY(!result.meta[3].foldHead);
+        QCOMPARE(result.meta[3].depth, 1);
 
         // Offset text
         QCOMPARE(result.meta[2].offsetText, QString("0"));
         QCOMPARE(result.meta[3].offsetText, QString("4"));
+
+        // Line 4 is root footer
+        QCOMPARE(result.meta[4].lineKind, LineKind::Footer);
     }
 
     void testVec3Continuation() {
@@ -74,22 +79,28 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + 3 Vec3 lines = 5 lines (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 5);
+        // CommandRow + CommandRow2 + 3 Vec3 lines + root footer = 6
+        QCOMPARE(result.meta.size(), 6);
 
-        // Line 2 (first Vec3 component): not continuation
+        // Line 2 (first Vec3 component): not continuation, depth 1
         QVERIFY(!result.meta[2].isContinuation);
         QCOMPARE(result.meta[2].offsetText, QString("0"));
+        QCOMPARE(result.meta[2].depth, 1);
 
-        // Lines 3-4: continuation
+        // Lines 3-4: continuation, depth 1
         QVERIFY(result.meta[3].isContinuation);
         QCOMPARE(result.meta[3].offsetText, QString("  \u00B7"));
+        QCOMPARE(result.meta[3].depth, 1);
         QVERIFY(result.meta[4].isContinuation);
         QCOMPARE(result.meta[4].offsetText, QString("  \u00B7"));
+        QCOMPARE(result.meta[4].depth, 1);
 
         // Continuation marker
         QVERIFY(result.meta[3].markerMask & (1u << M_CONT));
         QVERIFY(result.meta[4].markerMask & (1u << M_CONT));
+
+        // Line 5 is root footer
+        QCOMPARE(result.meta[5].lineKind, LineKind::Footer);
     }
 
     void testPaddingMarker() {
@@ -113,9 +124,13 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + padding = 3 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 3);
+        // CommandRow + CommandRow2 + padding + root footer = 4
+        QCOMPARE(result.meta.size(), 4);
         QVERIFY(result.meta[2].markerMask & (1u << M_PAD));
+        QCOMPARE(result.meta[2].depth, 1);
+
+        // Line 3 is root footer
+        QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
     }
 
     void testNullPointerMarker() {
@@ -141,10 +156,14 @@ private slots:
         BufferProvider prov(data);
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + ptr = 3 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 3);
+        // CommandRow + CommandRow2 + ptr + root footer = 4
+        QCOMPARE(result.meta.size(), 4);
         // No ambient validation markers — M_PTR0 is no longer set
         QVERIFY(!(result.meta[2].markerMask & (1u << M_PTR0)));
+        QCOMPARE(result.meta[2].depth, 1);
+
+        // Line 3 is root footer
+        QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
     }
 
     void testCollapsedStruct() {
@@ -169,10 +188,12 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // Collapsed: CommandRow + CommandRow2 + header only (no children, no footer)
-        QCOMPARE(result.meta.size(), 3);
-        QVERIFY(!result.meta[2].foldHead);      // root fold suppressed
-        QVERIFY(!result.meta[2].foldCollapsed);  // root fold suppressed
+        // Collapsed root: isRootHeader overrides collapse, so children + footer still render
+        // CommandRow + CommandRow2 + field + root footer = 4
+        QCOMPARE(result.meta.size(), 4);
+        QCOMPARE(result.meta[2].lineKind, LineKind::Field);
+        QCOMPARE(result.meta[2].depth, 1);
+        QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
     }
 
     void testUnreadablePointerNoRead() {
@@ -199,11 +220,15 @@ private slots:
         BufferProvider prov(data);
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + ptr = 3 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 3);
+        // CommandRow + CommandRow2 + ptr + root footer = 4
+        QCOMPARE(result.meta.size(), 4);
         // No ambient validation markers
         QVERIFY(!(result.meta[2].markerMask & (1u << M_ERR)));
         QVERIFY(!(result.meta[2].markerMask & (1u << M_PTR0)));
+        QCOMPARE(result.meta[2].depth, 1);
+
+        // Line 3 is root footer
+        QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
     }
 
     void testFoldLevels() {
@@ -235,14 +260,14 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // Child header (depth 0, fold head) — root suppressed, children at depth 0
-        QCOMPARE(result.meta[2].foldLevel, 0x400 | 0x2000);
-        QCOMPARE(result.meta[2].depth, 0);
+        // Child header (depth 1, fold head) — root header no longer emitted
+        QCOMPARE(result.meta[2].foldLevel, 0x401 | 0x2000);
+        QCOMPARE(result.meta[2].depth, 1);
         QVERIFY(result.meta[2].foldHead);
 
-        // Leaf (depth 1, not head)
-        QCOMPARE(result.meta[3].foldLevel, 0x401);
-        QCOMPARE(result.meta[3].depth, 1);
+        // Leaf (depth 2, not head)
+        QCOMPARE(result.meta[3].foldLevel, 0x402);
+        QCOMPARE(result.meta[3].depth, 2);
     }
 
     void testNestedStruct() {
@@ -289,28 +314,31 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + flags + Inner header + x + y + Inner footer = 7
-        // (root header/footer suppressed, children at depth 0)
-        QCOMPARE(result.meta.size(), 7);
+        // CommandRow + CommandRow2 + flags + Inner header + x + y + Inner footer + root footer = 8
+        QCOMPARE(result.meta.size(), 8);
 
-        // flags field (depth 0, root children at depth 0)
+        // flags field (depth 1)
         QCOMPARE(result.meta[2].lineKind, LineKind::Field);
-        QCOMPARE(result.meta[2].depth, 0);
+        QCOMPARE(result.meta[2].depth, 1);
 
-        // Inner header (depth 0, fold head)
+        // Inner header (depth 1, fold head)
         QCOMPARE(result.meta[3].lineKind, LineKind::Header);
-        QCOMPARE(result.meta[3].depth, 0);
+        QCOMPARE(result.meta[3].depth, 1);
         QVERIFY(result.meta[3].foldHead);
-        QCOMPARE(result.meta[3].foldLevel, 0x400 | 0x2000);
+        QCOMPARE(result.meta[3].foldLevel, 0x401 | 0x2000);
 
-        // Inner fields at depth 1
-        QCOMPARE(result.meta[4].depth, 1);
-        QCOMPARE(result.meta[4].foldLevel, 0x401);
-        QCOMPARE(result.meta[5].depth, 1);
+        // Inner fields at depth 2
+        QCOMPARE(result.meta[4].depth, 2);
+        QCOMPARE(result.meta[4].foldLevel, 0x402);
+        QCOMPARE(result.meta[5].depth, 2);
 
         // Inner footer
         QCOMPARE(result.meta[6].lineKind, LineKind::Footer);
-        QCOMPARE(result.meta[6].depth, 0);
+        QCOMPARE(result.meta[6].depth, 1);
+
+        // Root footer
+        QCOMPARE(result.meta[7].lineKind, LineKind::Footer);
+        QCOMPARE(result.meta[7].depth, 0);
     }
 
     void testPointerDerefExpansion() {
@@ -378,28 +406,28 @@ private slots:
 
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + magic + ptr(merged fold header) + fn1 + fn2 + ptr footer = 7
+        // CommandRow + CommandRow2 + magic + ptr(merged fold header) + fn1 + fn2 + ptr footer + Main footer = 8
         // VTable standalone: header + fn1 + fn2 + footer = 4
-        // Total = 11 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 11);
+        // Total = 12
+        QCOMPARE(result.meta.size(), 12);
 
-        // magic field (depth 0, root children at depth 0)
+        // magic field (depth 1)
         QCOMPARE(result.meta[2].lineKind, LineKind::Field);
-        QCOMPARE(result.meta[2].depth, 0);
+        QCOMPARE(result.meta[2].depth, 1);
 
         // Pointer as merged fold header: "ptr64<VTable> ptr {"
         QCOMPARE(result.meta[3].lineKind, LineKind::Header);
-        QCOMPARE(result.meta[3].depth, 0);
+        QCOMPARE(result.meta[3].depth, 1);
         QVERIFY(result.meta[3].foldHead);
         QCOMPARE(result.meta[3].nodeKind, NodeKind::Pointer64);
 
-        // Expanded fields at depth 1 (struct header merged into pointer)
-        QCOMPARE(result.meta[4].depth, 1);
-        QCOMPARE(result.meta[5].depth, 1);
+        // Expanded fields at depth 2 (struct header merged into pointer)
+        QCOMPARE(result.meta[4].depth, 2);
+        QCOMPARE(result.meta[5].depth, 2);
 
         // Pointer fold footer
         QCOMPARE(result.meta[6].lineKind, LineKind::Footer);
-        QCOMPARE(result.meta[6].depth, 0);
+        QCOMPARE(result.meta[6].depth, 1);
     }
 
     void testPointerDerefNull() {
@@ -443,13 +471,14 @@ private slots:
 
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + ptr(merged fold header) + ptr footer = 4
+        // CommandRow + CommandRow2 + ptr(merged fold header) + ptr footer + Main footer = 5
         // Target standalone: header + field + footer = 3
-        // Total = 7 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 7);
+        // Total = 8
+        QCOMPARE(result.meta.size(), 8);
 
         // Pointer as merged fold header (expanded but empty — null ptr)
         QCOMPARE(result.meta[2].lineKind, LineKind::Header);
+        QCOMPARE(result.meta[2].depth, 1);
         QVERIFY(result.meta[2].foldHead);
 
         // Pointer fold footer (empty expansion)
@@ -500,14 +529,14 @@ private slots:
 
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + ptr(fold head, collapsed) = 3
+        // CommandRow + CommandRow2 + ptr(fold head, collapsed) + Main footer = 4
         // Target standalone: header + field + footer = 3
-        // Total = 6 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 6);
+        // Total = 7
+        QCOMPARE(result.meta.size(), 7);
 
-        // Pointer is fold head (depth 0, root children at depth 0)
+        // Pointer is fold head (depth 1)
         QVERIFY(result.meta[2].foldHead);
-        QCOMPARE(result.meta[2].depth, 0);
+        QCOMPARE(result.meta[2].depth, 1);
     }
 
     void testPointerDerefCycle() {
@@ -570,9 +599,9 @@ private slots:
         QVERIFY(result.meta.size() > 0);
         QVERIFY(result.meta.size() < 100); // sanity: bounded output
 
-        // Root suppressed: CommandRow + CommandRow2 + ptr merged header + data + self merged header
+        // CommandRow + CommandRow2 + ptr merged header + data + self merged header
         // Second expansion blocked by cycle guard: no children under self
-        // Then: self footer + ptr footer + standalone Recursive rendering
+        // Then: self footer + ptr footer + Main footer + standalone Recursive rendering
         QVERIFY(result.meta[2].foldHead);                     // ptr merged fold head
         QCOMPARE(result.meta[2].lineKind, LineKind::Header); // ptr merged header
         QCOMPARE(result.meta[3].lineKind, LineKind::Field);  // data field (first child of Recursive)
@@ -926,15 +955,16 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + Array header(collapsed) = 3 (root header/footer suppressed)
-        QCOMPARE(result.meta.size(), 3);
+        // CommandRow + CommandRow2 + Array header(collapsed) + root footer = 4
+        QCOMPARE(result.meta.size(), 4);
 
-        // Array header is collapsed
+        // Array header is collapsed (at index 2)
         int arrLine = -1;
         for (int i = 0; i < result.meta.size(); i++) {
             if (result.meta[i].isArrayHeader) { arrLine = i; break; }
         }
         QVERIFY(arrLine >= 0);
+        QCOMPARE(arrLine, 2);
         QVERIFY(result.meta[arrLine].foldCollapsed);
 
         // Header text should NOT contain "{"

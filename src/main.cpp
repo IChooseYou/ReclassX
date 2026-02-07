@@ -201,9 +201,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_mdiArea->setTabsMovable(true);
     setCentralWidget(m_mdiArea);
 
+    createWorkspaceDock();
     createMenus();
     createStatusBar();
-    createWorkspaceDock();
 
     connect(m_mdiArea, &QMdiArea::subWindowActivated,
             this, [this](QMdiSubWindow*) {
@@ -279,6 +279,8 @@ void MainWindow::createMenus() {
     view->addSeparator();
     m_actViewRendered = view->addAction(makeIcon(":/vsicons/code.svg"), "&C/C++", this, [this]() { setViewMode(VM_Rendered); });
     m_actViewReclass  = view->addAction(makeIcon(":/vsicons/eye.svg"), "&Reclass View", this, [this]() { setViewMode(VM_Reclass); });
+    view->addSeparator();
+    view->addAction(m_workspaceDock->toggleViewAction());
 
     // Node
     auto* node = menuBar()->addMenu("&Node");
@@ -395,12 +397,48 @@ void MainWindow::newFile() {
 }
 
 void MainWindow::selfTest() {
-    // Load demo.rcx if it exists, otherwise create a blank project
     QString demoPath = QCoreApplication::applicationDirPath() + "/demo.rcx";
     if (QFile::exists(demoPath)) {
         project_open(demoPath);
     } else {
-        project_new();
+        // Create default demo with a single Ball struct
+        auto* doc = new RcxDocument(this);
+        doc->tree.baseAddress = 0x00400000;
+
+        Node ball;
+        ball.kind = NodeKind::Struct;
+        ball.name = "aBall";
+        ball.structTypeName = "Ball";
+        ball.parentId = 0;
+        ball.offset = 0;
+        int bi = doc->tree.addNode(ball);
+        uint64_t ballId = doc->tree.nodes[bi].id;
+
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_00";   n.parentId = ballId; n.offset = 0;  doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_08";   n.parentId = ballId; n.offset = 8;  doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Vec4;   n.name = "position";   n.parentId = ballId; n.offset = 16; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity";   n.parentId = ballId; n.offset = 32; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_2C";   n.parentId = ballId; n.offset = 44; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "speed";      n.parentId = ballId; n.offset = 48; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_34";   n.parentId = ballId; n.offset = 52; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 56; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_3C";   n.parentId = ballId; n.offset = 60; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "radius";     n.parentId = ballId; n.offset = 64; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_44";   n.parentId = ballId; n.offset = 68; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Double; n.name = "mass";       n.parentId = ballId; n.offset = 72; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_50";   n.parentId = ballId; n.offset = 80; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";     n.parentId = ballId; n.offset = 88; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_59";   n.parentId = ballId; n.offset = 89; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_5A";   n.parentId = ballId; n.offset = 90; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "bounceCount"; n.parentId = ballId; n.offset = 92; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_60";   n.parentId = ballId; n.offset = 96; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_68";   n.parentId = ballId; n.offset = 100; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_70";   n.parentId = ballId; n.offset = 108; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_78";   n.parentId = ballId; n.offset = 116; doc->tree.addNode(n); }
+
+        doc->save(demoPath);
+        doc->load(demoPath);
+        createTab(doc);
     }
 }
 
@@ -886,6 +924,7 @@ void MainWindow::createWorkspaceDock() {
 
     m_workspaceDock->setWidget(m_workspaceTree);
     addDockWidget(Qt::LeftDockWidgetArea, m_workspaceDock);
+    m_workspaceDock->hide();
 
     connect(m_workspaceTree, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
         // Data roles: UserRole=QMdiSubWindow*, UserRole+1=structId, UserRole+2=nodeId
