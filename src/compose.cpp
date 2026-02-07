@@ -39,7 +39,7 @@ struct ComposeState {
         if (currentLine > 0) text += '\n';
         // 3-char fold indicator column: " - " expanded, " + " collapsed, "   " other
         // CommandRow has no fold prefix (flush left)
-        if (lm.lineKind == LineKind::CommandRow) {
+        if (lm.lineKind == LineKind::CommandRow || lm.lineKind == LineKind::CommandRow2) {
             // no prefix
         } else if (lm.foldHead)
             text += lm.foldCollapsed ? QStringLiteral(" + ") : QStringLiteral(" - ");
@@ -148,6 +148,16 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.effectiveNameW  = nameW;
         lm.pointerTargetName = ptrTargetName;
 
+        // Set byte count for hex preview lines (used for per-byte change highlighting)
+        if (isHexPreview(node.kind)) {
+            if (node.kind == NodeKind::Padding) {
+                int totalSz = qMax(1, node.arrayLen);
+                lm.lineByteCount = qMin(8, totalSz - sub * 8);
+            } else {
+                lm.lineByteCount = sizeForKind(node.kind);
+            }
+        }
+
         QString lineText = fmt::fmtNodeLine(node, prov, absAddr, depth, sub,
                                             /*comment=*/{}, typeW, nameW, ptrTypeOverride);
         state.emitLine(lineText, lm);
@@ -203,8 +213,14 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         state.emitLine(fmt::indent(depth) + QStringLiteral("[%1]").arg(arrayElementIdx), lm);
     }
 
-    // Header line (skip for array element structs - condensed display)
-    if (!isArrayChild) {
+    // Detect root header: first root-level struct — suppressed from display
+    // (CommandRow2 already shows the root class type + name)
+    bool isRootHeader = (node.parentId == 0 && node.kind == NodeKind::Struct && !state.baseEmitted);
+    if (isRootHeader)
+        state.baseEmitted = true;
+
+    // Header line (skip for array element structs and root struct)
+    if (!isArrayChild && !isRootHeader) {
         // Get per-scope widths for this header's parent scope
         int typeW = state.effectiveTypeW(scopeId);
         int nameW = state.effectiveNameW(scopeId);
@@ -216,12 +232,11 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.lineKind   = LineKind::Header;
         lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
         lm.nodeKind   = node.kind;
+        lm.isRootHeader = false;
         lm.foldHead      = true;
         lm.foldCollapsed = node.collapsed;
         lm.foldLevel  = computeFoldLevel(depth, true);
         lm.markerMask = (1u << M_STRUCT_BG);
-        lm.isRootHeader = (node.parentId == 0 && node.kind == NodeKind::Struct && !state.baseEmitted);
-        if (lm.isRootHeader) state.baseEmitted = true;
         lm.effectiveTypeW = typeW;
         lm.effectiveNameW = nameW;
 
@@ -240,11 +255,14 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         state.emitLine(headerText, lm);
     }
 
-    if (!node.collapsed || isArrayChild) {
+    if (!node.collapsed || isArrayChild || isRootHeader) {
         QVector<int> children = state.childMap.value(node.id);
         std::sort(children.begin(), children.end(), [&](int a, int b) {
             return tree.nodes[a].offset < tree.nodes[b].offset;
         });
+
+        // Root struct children compose at same depth (no header to indent from)
+        int childDepth = isRootHeader ? depth : depth + 1;
 
         // For arrays, render children as condensed (no header/footer for struct elements)
         bool childrenAreArrayElements = (node.kind == NodeKind::Array);
@@ -252,14 +270,14 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         for (int childIdx : children) {
             // Pass this container's id as the scope for children (for per-scope widths)
             // For array elements, also pass the element index for [N] separator
-            composeNode(state, tree, prov, childIdx, depth + 1, base, rootId,
+            composeNode(state, tree, prov, childIdx, childDepth, base, rootId,
                         childrenAreArrayElements, node.id,
                         childrenAreArrayElements ? elementIdx++ : -1);
         }
     }
 
-    // Footer line: skip when collapsed (only header shows) or for array element structs
-    if (!isArrayChild && !node.collapsed) {
+    // Footer line: skip when collapsed, for array element structs, or for root struct
+    if (!isArrayChild && !isRootHeader && !node.collapsed) {
         LineMeta lm;
         lm.nodeIdx   = nodeIdx;
         lm.nodeId    = node.id;
@@ -464,6 +482,22 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
         state.emitLine(QStringLiteral("File  Address: 0x0"), lm);
     }
 
+    // Emit CommandRow2 as line 1 (root class type + name)
+    {
+        LineMeta lm;
+        lm.nodeIdx   = -1;
+        lm.nodeId    = kCommandRow2Id;
+        lm.depth     = 0;
+        lm.lineKind  = LineKind::CommandRow2;
+        lm.foldLevel = SC_FOLDLEVELBASE;
+        lm.foldHead  = false;
+        lm.offsetText.clear();
+        lm.markerMask = 0;
+        lm.effectiveTypeW = state.typeW;
+        lm.effectiveNameW = state.nameW;
+        state.emitLine(QStringLiteral("struct <no class>  alignas(1)"), lm);
+    }
+
     QVector<int> roots = state.childMap.value(0);
     std::sort(roots.begin(), roots.end(), [&](int a, int b) {
         return tree.nodes[a].offset < tree.nodes[b].offset;
@@ -513,6 +547,22 @@ QSet<uint64_t> NodeTree::normalizePreferDescendants(const QSet<uint64_t>& ids) c
             result.insert(id);
     }
     return result;
+}
+
+int NodeTree::computeStructAlignment(uint64_t structId) const {
+    int idx = indexOfId(structId);
+    if (idx < 0) return 1;
+    int maxAlign = 1;
+    QVector<int> kids = childrenOf(structId);
+    for (int ci : kids) {
+        const Node& c = nodes[ci];
+        if (c.kind == NodeKind::Struct || c.kind == NodeKind::Array) {
+            maxAlign = qMax(maxAlign, computeStructAlignment(c.id));
+        } else {
+            maxAlign = qMax(maxAlign, alignmentFor(c.kind));
+        }
+    }
+    return maxAlign;
 }
 
 } // namespace rcx

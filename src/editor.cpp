@@ -80,7 +80,9 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
         if (!m_editState.active) return;
         if (id == 1 && (m_editState.target == EditTarget::Type
                      || m_editState.target == EditTarget::ArrayElementType
-                     || m_editState.target == EditTarget::PointerTarget)) {
+                     || m_editState.target == EditTarget::PointerTarget
+                     || m_editState.target == EditTarget::RootClassType
+                     || m_editState.target == EditTarget::Alignas)) {
             auto info = endInlineEdit();
             emit inlineEditCommitted(info.nodeIdx, info.subLine, info.target, text);
         }
@@ -105,8 +107,6 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
 }
 
 RcxEditor::~RcxEditor() {
-    if (m_cursorOverridden)
-        QApplication::restoreOverrideCursor();
 }
 
 void RcxEditor::setupScintilla() {
@@ -137,7 +137,7 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)0, (long)0);
 
-    // Editable-field indicator - set to HIDDEN (no visual, avoids INDIC_PLAIN underline)
+    // Editable-field indicator - HIDDEN (no visual)
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_EDITABLE, 5 /*INDIC_HIDDEN*/);
 
@@ -169,11 +169,11 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETUNDER,
                          IND_CMD_PILL, (long)1);
 
-    // Data-changed indicator — amber text for values that changed since last refresh
+    // Data-changed indicator — muted green text (derived from number green #b5cea8)
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_DATA_CHANGED, 17 /*INDIC_TEXTFORE*/);
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_DATA_CHANGED, QColor("#E5A00D"));
+                         IND_DATA_CHANGED, QColor("#8fbc7a"));
 
 }
 
@@ -359,7 +359,7 @@ void RcxEditor::applyMarkers(const QVector<LineMeta>& meta) {
     }
     m_sci->markerDeleteAll(M_CMD_ROW);
     for (int i = 0; i < meta.size(); i++) {
-        if (meta[i].lineKind == LineKind::CommandRow) {
+        if (meta[i].lineKind == LineKind::CommandRow || meta[i].lineKind == LineKind::CommandRow2) {
             m_sci->markerAdd(i, M_CMD_ROW);
             continue;
         }
@@ -557,12 +557,32 @@ void RcxEditor::applyDataChangedHighlight(const QVector<LineMeta>& meta) {
         if (!meta[i].dataChanged) continue;
         if (isSyntheticLine(meta[i])) continue;
 
-        QString lineText = getLineText(m_sci, i);
-        int typeW = meta[i].effectiveTypeW;
-        int nameW = meta[i].effectiveNameW;
-        ColumnSpan vs = valueSpan(meta[i], lineText.size(), typeW, nameW);
-        if (vs.valid)
-            fillIndicatorCols(IND_DATA_CHANGED, i, vs.start, vs.end);
+        const LineMeta& lm = meta[i];
+        int typeW = lm.effectiveTypeW;
+        int nameW = lm.effectiveNameW;
+
+        if (isHexPreview(lm.nodeKind) && !lm.changedByteIndices.isEmpty()) {
+            // Per-byte highlighting in ASCII + hex areas
+            int ind = kFoldCol + lm.depth * 3;
+            int asciiStart = ind + typeW + kSepWidth;
+            // Hex8-64: ASCII always padded to 8; Padding: ASCII = lineByteCount chars
+            int asciiWidth = (lm.nodeKind == NodeKind::Padding) ? lm.lineByteCount : 8;
+            int hexStart = asciiStart + asciiWidth + kSepWidth;
+
+            for (int byteIdx : lm.changedByteIndices) {
+                // Highlight in ASCII area (1 char per byte)
+                fillIndicatorCols(IND_DATA_CHANGED, i, asciiStart + byteIdx, asciiStart + byteIdx + 1);
+                // Highlight in hex area (2 hex chars per byte at position byteIdx*3)
+                int hexCol = hexStart + byteIdx * 3;
+                fillIndicatorCols(IND_DATA_CHANGED, i, hexCol, hexCol + 2);
+            }
+        } else {
+            // Non-hex nodes: highlight entire value span
+            QString lineText = getLineText(m_sci, i);
+            ColumnSpan vs = valueSpan(lm, lineText.size(), typeW, nameW);
+            if (vs.valid)
+                fillIndicatorCols(IND_DATA_CHANGED, i, vs.start, vs.end);
+        }
     }
 }
 
@@ -583,6 +603,7 @@ void RcxEditor::applyCommandRowPills() {
     QString t = getLineText(m_sci, line);
 
     clearIndicatorLine(IND_CMD_PILL, line);
+    clearIndicatorLine(IND_HEX_DIM, line);
 
     auto fillPadded = [&](ColumnSpan s) {
         if (!s.valid) return;
@@ -593,6 +614,48 @@ void RcxEditor::applyCommandRowPills() {
 
     fillPadded(commandRowSrcSpan(t));
     fillPadded(commandRowAddrSpan(t));
+
+    // Dim label text: provider kind ("File"/"Process") and "Address:"
+    ColumnSpan srcSpan = commandRowSrcSpan(t);
+    if (srcSpan.valid) {
+        int quotePos = t.indexOf('\'', srcSpan.start);
+        int kindEnd = (quotePos > srcSpan.start) ? quotePos : srcSpan.end;
+        while (kindEnd > srcSpan.start && t[kindEnd - 1].isSpace()) kindEnd--;
+        if (kindEnd > srcSpan.start)
+            fillIndicatorCols(IND_HEX_DIM, line, srcSpan.start, kindEnd);
+    }
+    int addrTag = t.indexOf(QStringLiteral(" Address: "));
+    if (addrTag >= 0)
+        fillIndicatorCols(IND_HEX_DIM, line, addrTag + 1, addrTag + 9);
+
+    // Style CommandRow2 (line 1) if present
+    if (m_meta.size() > 1 && m_meta[1].lineKind == LineKind::CommandRow2) {
+        constexpr int line2 = 1;
+        QString t2 = getLineText(m_sci, line2);
+
+        clearIndicatorLine(IND_CMD_PILL, line2);
+        clearIndicatorLine(IND_HEX_DIM, line2);
+
+        auto fillPadded2 = [&](ColumnSpan s) {
+            if (!s.valid) return;
+            int a = qMax(0, s.start - 1);
+            int b = qMin(t2.size(), s.end + 1);
+            fillIndicatorCols(IND_CMD_PILL, line2, a, b);
+        };
+
+        ColumnSpan typeSpan = commandRow2TypeSpan(t2);
+        fillPadded2(typeSpan);
+        if (typeSpan.valid)
+            fillIndicatorCols(IND_HEX_DIM, line2, typeSpan.start, typeSpan.end);
+
+        ColumnSpan nameSpan = commandRow2NameSpan(t2);
+        fillPadded2(nameSpan);
+
+        ColumnSpan alignasSpan = commandRow2AlignasSpan(t2);
+        fillPadded2(alignasSpan);
+        if (alignasSpan.valid)
+            fillIndicatorCols(IND_HEX_DIM, line2, alignasSpan.start, alignasSpan.end);
+    }
 }
 
 // ── Shared inline-edit shutdown ──
@@ -607,13 +670,8 @@ RcxEditor::EndEditInfo RcxEditor::endInlineEdit() {
     m_editState.active = false;
     m_sci->setReadOnly(true);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 0);
-    // Switch from I-beam to Arrow (keep override active to block Scintilla's cursor)
-    if (m_cursorOverridden) {
-        QApplication::changeOverrideCursor(Qt::ArrowCursor);
-    } else {
-        QApplication::setOverrideCursor(Qt::ArrowCursor);
-        m_cursorOverridden = true;
-    }
+    // Switch back to Arrow cursor (widget-local, doesn't fight splitters/menus)
+    m_sci->viewport()->setCursor(Qt::ArrowCursor);
     // Disable selection rendering again
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)0, (long)0);
@@ -753,10 +811,27 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
         return out.valid;
     }
 
+    // CommandRow2: root class type, name, and alignas
+    if (lm->lineKind == LineKind::CommandRow2) {
+        if (t != EditTarget::RootClassType && t != EditTarget::RootClassName
+            && t != EditTarget::Alignas) return false;
+        QString lineText = getLineText(m_sci, line);
+        ColumnSpan s;
+        if (t == EditTarget::RootClassType)       s = commandRow2TypeSpan(lineText);
+        else if (t == EditTarget::RootClassName)   s = commandRow2NameSpan(lineText);
+        else                                       s = commandRow2AlignasSpan(lineText);
+        out = normalizeSpan(s, lineText, t, false);
+        if (lineTextOut) *lineTextOut = lineText;
+        return out.valid;
+    }
+
     if (lm->nodeIdx < 0) return false;
 
     // Padding: reject value editing (hex bytes are display-only)
     if (t == EditTarget::Value && lm->nodeKind == NodeKind::Padding)
+        return false;
+    // Hex nodes: only Type is editable (ASCII preview + hex bytes are display-only)
+    if ((t == EditTarget::Name || t == EditTarget::Value) && isHexNode(lm->nodeKind))
         return false;
 
     QString lineText = getLineText(m_sci, line);
@@ -868,6 +943,17 @@ static bool hitTestTarget(QsciScintilla* sci,
         return false;
     }
 
+    // CommandRow2: root class type, name, and alignas
+    if (lm.lineKind == LineKind::CommandRow2) {
+        ColumnSpan ts = commandRow2TypeSpan(lineText);
+        if (inSpan(ts)) { outTarget = EditTarget::RootClassType; outLine = line; return true; }
+        ColumnSpan ns = commandRow2NameSpan(lineText);
+        if (inSpan(ns)) { outTarget = EditTarget::RootClassName; outLine = line; return true; }
+        ColumnSpan as = commandRow2AlignasSpan(lineText);
+        if (inSpan(as)) { outTarget = EditTarget::Alignas; outLine = line; return true; }
+        return false;
+    }
+
     // Use per-line effective widths from LineMeta
     int typeW = lm.effectiveTypeW;
     int nameW = lm.effectiveNameW;
@@ -908,6 +994,9 @@ static bool hitTestTarget(QsciScintilla* sci,
 
     // Padding nodes: hex bytes are display-only, not editable
     if (outTarget == EditTarget::Value && lm.nodeKind == NodeKind::Padding)
+        return false;
+    // Hex nodes: only Type is editable (ASCII preview + hex bytes are display-only)
+    if ((outTarget == EditTarget::Name || outTarget == EditTarget::Value) && isHexNode(lm.nodeKind))
         return false;
 
     outLine = line;
@@ -995,7 +1084,7 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                 return true;
             }
             // CommandRow: try ADDR edit or consume
-            if (h.nodeId == kCommandRowId) {
+            if (h.nodeId == kCommandRowId || h.nodeId == kCommandRow2Id) {
                 int tLine; EditTarget t;
                 if (hitTestTarget(m_sci, m_meta, me->pos(), tLine, t))
                     beginInlineEdit(t, tLine);
@@ -1032,6 +1121,7 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                     m_pendingClickNodeId = 0;
                 }
             }
+            return true;  // consume ALL left-clicks (prevent QScintilla caret/cursor)
         }
     }
     // Drag-select: extend selection as mouse moves with button held
@@ -1044,7 +1134,7 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
             if (!m_dragStarted) {
                 int dy = me->pos().y() - m_dragStartPos.y();
                 if (qAbs(dy) < 8)
-                    return false;  // not yet a drag, let Scintilla handle
+                    return true;  // not yet a drag, but still consume (don't let Scintilla handle)
                 m_dragStarted = true;
             }
 
@@ -1072,6 +1162,7 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                              m_pendingClickMods);
             m_pendingClickNodeId = 0;
         }
+        return true;  // consume release (prevent QScintilla from acting on it)
     }
     // Double-click during edit mode: select entire editable text
     if (obj == m_sci->viewport() && m_editState.active
@@ -1088,10 +1179,11 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
             m_pendingClickNodeId = 0;   // cancel deferred selection change
             // Narrow selection to this node before editing
             auto h = hitTest(me->pos());
-            if (h.nodeId != 0 && h.nodeId != kCommandRowId)
+            if (h.nodeId != 0 && h.nodeId != kCommandRowId && h.nodeId != kCommandRow2Id)
                 emit nodeClicked(h.line, h.nodeId, Qt::NoModifier);
             return beginInlineEdit(t, line);
         }
+        return true;  // consume even on miss (prevent QScintilla word-select)
     }
     if (obj == m_sci && event->type() == QEvent::FocusOut) {
         auto* fe = static_cast<QFocusEvent*>(event);
@@ -1113,22 +1205,25 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         m_sci->getCursorPosition(&line, &col);
         updateEditableIndicators(line);
     }
-    if (obj == m_sci->viewport() && !m_editState.active) {
+    // Track mouse position for cursor updates (both edit and non-edit mode)
+    if (obj == m_sci->viewport()) {
         if (event->type() == QEvent::MouseMove) {
             m_lastHoverPos = static_cast<QMouseEvent*>(event)->pos();
             m_hoverInside = true;
         } else if (event->type() == QEvent::Leave) {
             m_hoverInside = false;
-            m_hoveredNodeId = 0;
-            m_hoveredLine = -1;
-            applyHoverHighlight();
+            if (!m_editState.active) {
+                m_hoveredNodeId = 0;
+                m_hoveredLine = -1;
+                applyHoverHighlight();
+            }
         } else if (event->type() == QEvent::Wheel) {
             m_lastHoverPos = m_sci->viewport()->mapFromGlobal(QCursor::pos());
             m_hoverInside = m_sci->viewport()->rect().contains(m_lastHoverPos);
         }
-        // Resolve hovered nodeId on move/wheel
-        if (event->type() == QEvent::MouseMove
-         || event->type() == QEvent::Wheel) {
+        // Resolve hovered nodeId on move/wheel (non-edit mode only)
+        if (!m_editState.active &&
+            (event->type() == QEvent::MouseMove || event->type() == QEvent::Wheel)) {
             auto h = hitTest(m_lastHoverPos);
             uint64_t newHoverId = (m_hoverInside && h.line >= 0) ? h.nodeId : 0;
             int newHoverLine = (m_hoverInside && h.line >= 0) ? h.line : -1;
@@ -1138,10 +1233,16 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                 applyHoverHighlight();
             }
         }
+        // Update cursor on move/leave/wheel (both edit and non-edit mode)
         if (event->type() == QEvent::MouseMove
          || event->type() == QEvent::Leave
          || event->type() == QEvent::Wheel)
             applyHoverCursor();
+
+        // Consume MouseMove in non-edit mode so QScintilla's internal handler
+        // doesn't override our cursor (it resets to Arrow for read-only widgets)
+        if (!m_editState.active && event->type() == QEvent::MouseMove)
+            return true;
     }
     return QWidget::eventFilter(obj, event);
 }
@@ -1264,12 +1365,18 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->getCursorPosition(&line, &col);
     auto* lm = metaForLine(line);
     if (!lm) return false;
-    // Allow nodeIdx=-1 only for CommandRow BaseAddress/Source editing
+    // Allow nodeIdx=-1 only for CommandRow/CommandRow2 editing
     if (lm->nodeIdx < 0 && !(lm->lineKind == LineKind::CommandRow &&
-        (target == EditTarget::BaseAddress || target == EditTarget::Source)))
+        (target == EditTarget::BaseAddress || target == EditTarget::Source))
+        && !(lm->lineKind == LineKind::CommandRow2 &&
+        (target == EditTarget::RootClassType || target == EditTarget::RootClassName
+         || target == EditTarget::Alignas)))
         return false;
     // Padding: reject value editing (display-only hex bytes)
     if (target == EditTarget::Value && lm->nodeKind == NodeKind::Padding)
+        return false;
+    // Hex nodes: only Type is editable (ASCII preview + hex bytes are display-only)
+    if ((target == EditTarget::Name || target == EditTarget::Value) && isHexNode(lm->nodeKind))
         return false;
 
     QString lineText;
@@ -1306,13 +1413,9 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->setReadOnly(false);
     // Switch to I-beam for editing (skip for picker-based targets)
     if (target != EditTarget::Type && target != EditTarget::Source
-        && target != EditTarget::ArrayElementType && target != EditTarget::PointerTarget) {
-        if (m_cursorOverridden) {
-            QApplication::changeOverrideCursor(Qt::IBeamCursor);
-        } else {
-            QApplication::setOverrideCursor(Qt::IBeamCursor);
-            m_cursorOverridden = true;
-        }
+        && target != EditTarget::ArrayElementType && target != EditTarget::PointerTarget
+        && target != EditTarget::RootClassType) {
+        m_sci->viewport()->setCursor(Qt::IBeamCursor);
     }
 
     // Re-enable selection rendering for inline edit
@@ -1342,6 +1445,40 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
         QTimer::singleShot(0, this, &RcxEditor::showSourcePicker);
     if (target == EditTarget::PointerTarget)
         QTimer::singleShot(0, this, &RcxEditor::showPointerTargetPicker);
+    if (target == EditTarget::RootClassType) {
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_editState.active || m_editState.target != EditTarget::RootClassType) return;
+            // Replace text with spaces and show picker
+            int len = m_editState.original.size();
+            QString spaces(len, ' ');
+            m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL,
+                                 m_editState.posStart, m_editState.posEnd);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACESEL,
+                                 (uintptr_t)0, spaces.toUtf8().constData());
+            m_sci->SendScintilla(QsciScintillaBase::SCI_GOTOPOS, m_editState.posStart);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
+            m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
+                                 (uintptr_t)1, "struct\nclass\nenum");
+            m_sci->viewport()->setCursor(Qt::ArrowCursor);
+        });
+    }
+    if (target == EditTarget::Alignas) {
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_editState.active || m_editState.target != EditTarget::Alignas) return;
+            int len = m_editState.original.size();
+            QString spaces(len, ' ');
+            m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL,
+                                 m_editState.posStart, m_editState.posEnd);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACESEL,
+                                 (uintptr_t)0, spaces.toUtf8().constData());
+            m_sci->SendScintilla(QsciScintillaBase::SCI_GOTOPOS, m_editState.posStart);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
+            m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
+                                 (uintptr_t)1,
+                                 "alignas(1)\nalignas(4)\nalignas(8)\nalignas(16)");
+            m_sci->viewport()->setCursor(Qt::ArrowCursor);
+        });
+    }
 
     return true;
 }
@@ -1469,7 +1606,8 @@ void RcxEditor::showTypeListFiltered(const QString& filter) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
     m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
                          (uintptr_t)1, list.constData());
-    // Arrow cursor for popup is handled by applyHoverCursor() via isListActive()
+    // Force Arrow cursor immediately (don't wait for mouse move)
+    m_sci->viewport()->setCursor(Qt::ArrowCursor);
 }
 
 void RcxEditor::showSourcePicker() {
@@ -1574,6 +1712,8 @@ void RcxEditor::showPointerTargetListFiltered(const QString& filter) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
     m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
                          (uintptr_t)1, list.constData());
+    // Force Arrow cursor immediately (don't wait for mouse move)
+    m_sci->viewport()->setCursor(Qt::ArrowCursor);
 }
 
 void RcxEditor::updatePointerTargetFilter() {
@@ -1599,7 +1739,7 @@ void RcxEditor::paintEditableSpans(int line) {
     const LineMeta* lm = metaForLine(line);
     if (!lm) return;
     // CommandRow: paint Source and BaseAddress spans
-    if (isSyntheticLine(*lm)) {
+    if (lm->lineKind == LineKind::CommandRow) {
         NormalizedSpan norm;
         if (resolvedSpanFor(line, EditTarget::Source, norm))
             fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
@@ -1607,6 +1747,18 @@ void RcxEditor::paintEditableSpans(int line) {
             fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
         return;
     }
+    // CommandRow2: paint RootClassType, RootClassName, and Alignas spans
+    if (lm->lineKind == LineKind::CommandRow2) {
+        NormalizedSpan norm;
+        if (resolvedSpanFor(line, EditTarget::RootClassType, norm))
+            fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
+        if (resolvedSpanFor(line, EditTarget::RootClassName, norm))
+            fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
+        if (resolvedSpanFor(line, EditTarget::Alignas, norm))
+            fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
+        return;
+    }
+    if (isSyntheticLine(*lm)) return;
     NormalizedSpan norm;
     for (EditTarget t : {EditTarget::Type, EditTarget::Name, EditTarget::Value,
                          EditTarget::ArrayElementType, EditTarget::ArrayElementCount,
@@ -1669,29 +1821,37 @@ void RcxEditor::applyHoverCursor() {
         clearIndicatorLine(IND_HOVER_SPAN, ln);
     m_hoverSpanLines.clear();
 
-    // Edit mode handles its own cursor (I-beam)
-    if (m_editState.active)
+    // Lock cursor to Arrow during drag-selection (prevents flicker)
+    if (m_dragStarted) {
+        m_sci->viewport()->setCursor(Qt::ArrowCursor);
         return;
+    }
+
+    // Edit mode: IBeam inside edit span, Arrow outside
+    if (m_editState.active) {
+        if (m_sci->isListActive()) {
+            m_sci->viewport()->setCursor(Qt::ArrowCursor);
+            return;
+        }
+        auto h = hitTest(m_lastHoverPos);
+        if (h.line == m_editState.line &&
+            h.col >= m_editState.spanStart && h.col <= editEndCol()) {
+            m_sci->viewport()->setCursor(Qt::IBeamCursor);
+        } else {
+            m_sci->viewport()->setCursor(Qt::ArrowCursor);
+        }
+        return;
+    }
 
     // Mouse left viewport - set Arrow
-    if (!m_hoverInside || !m_sci->viewport()->underMouse()) {
-        if (!m_cursorOverridden) {
-            QApplication::setOverrideCursor(Qt::ArrowCursor);
-            m_cursorOverridden = true;
-        } else {
-            QApplication::changeOverrideCursor(Qt::ArrowCursor);
-        }
+    if (!m_hoverInside) {
+        m_sci->viewport()->setCursor(Qt::ArrowCursor);
         return;
     }
 
     // If autocomplete/user list popup is active, use arrow cursor
     if (m_sci->isListActive()) {
-        if (!m_cursorOverridden) {
-            QApplication::setOverrideCursor(Qt::ArrowCursor);
-            m_cursorOverridden = true;
-        } else {
-            QApplication::changeOverrideCursor(Qt::ArrowCursor);
-        }
+        m_sci->viewport()->setCursor(Qt::ArrowCursor);
         return;
     }
 
@@ -1699,34 +1859,13 @@ void RcxEditor::applyHoverCursor() {
     int line; EditTarget t;
     bool tokenHit = hitTestTarget(m_sci, m_meta, m_lastHoverPos, line, t);
 
-    // For hex preview nodes, check if cursor is in the data area (ASCII or hex bytes)
+    // Skip hover span on footer lines (nothing editable)
     int hoverLine = h.line;
-    bool inHexDataArea = false;
-    uint64_t hoverNodeId = 0;
-    if (hoverLine >= 0 && hoverLine < m_meta.size()
-        && isHexPreview(m_meta[hoverLine].nodeKind)) {
-        hoverNodeId = m_meta[hoverLine].nodeId;
-        if (hoverNodeId != 0 && h.col >= 0) {
-            int ind = kFoldCol + m_meta[hoverLine].depth * 3;
-            int typeW = m_meta[hoverLine].effectiveTypeW;
-            int dataStart = ind + typeW + kSepWidth;
-            inHexDataArea = (h.col >= dataStart);
-        }
-    }
+    bool isFooterLine = (hoverLine >= 0 && hoverLine < m_meta.size()
+                         && m_meta[hoverLine].lineKind == LineKind::Footer);
 
-    // Apply hover span indicator
-    if (inHexDataArea) {
-        // Hex preview nodes: highlight ASCII + hex byte areas on ALL lines of this node
-        for (int i = 0; i < m_meta.size(); i++) {
-            if (m_meta[i].nodeId != hoverNodeId) continue;
-            int ind = kFoldCol + m_meta[i].depth * 3;
-            int typeW = m_meta[i].effectiveTypeW;
-            int asciiStart = ind + typeW + kSepWidth;
-            int hexEnd = asciiStart + 8 + kSepWidth + 23;
-            fillIndicatorCols(IND_HOVER_SPAN, i, asciiStart, hexEnd);
-            m_hoverSpanLines.append(i);
-        }
-    } else if (tokenHit) {
+    // Apply hover span indicator for editable tokens
+    if (tokenHit && !isFooterLine) {
         NormalizedSpan span;
         if (resolvedSpanFor(line, t, span)) {
             fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
@@ -1734,20 +1873,35 @@ void RcxEditor::applyHoverCursor() {
         }
     }
 
-    // Also show pointer cursor for fold column on fold-head lines
-    bool interactive = tokenHit || inHexDataArea;
-    if (!interactive) {
-        if (h.inFoldCol) interactive = true;
+    // Determine cursor shape based on interaction type
+    Qt::CursorShape desired = Qt::ArrowCursor;
+
+    if (h.inFoldCol) {
+        desired = Qt::PointingHandCursor;  // fold toggle = button
+    } else if (tokenHit) {
+        // Check if mouse is actually over trimmed text content (not column padding)
+        NormalizedSpan trimmed;
+        bool overText = resolvedSpanFor(line, t, trimmed)
+                        && h.col >= trimmed.start && h.col < trimmed.end;
+        if (overText) {
+            switch (t) {
+            case EditTarget::Type:
+            case EditTarget::Source:
+            case EditTarget::ArrayElementType:
+            case EditTarget::PointerTarget:
+            case EditTarget::RootClassType:
+            case EditTarget::Alignas:
+                desired = Qt::PointingHandCursor;
+                break;
+            default:
+                desired = Qt::IBeamCursor;
+                break;
+            }
+        }
+        // else: desired stays Arrow (hovering over column padding)
     }
 
-    // Set cursor: pointing hand for interactive, arrow otherwise
-    Qt::CursorShape desired = interactive ? Qt::PointingHandCursor : Qt::ArrowCursor;
-    if (!m_cursorOverridden) {
-        QApplication::setOverrideCursor(desired);
-        m_cursorOverridden = true;
-    } else {
-        QApplication::changeOverrideCursor(desired);
-    }
+    m_sci->viewport()->setCursor(desired);
 }
 
 // ── Live value validation ──
@@ -1837,6 +1991,36 @@ void RcxEditor::setCommandRowText(const QString& line) {
 
     long start = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 0);
     long end   = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, 0);
+    QByteArray utf8 = s.toUtf8();
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, start);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, end);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET, (uintptr_t)utf8.size(), utf8.constData());
+
+    if (wasReadOnly) m_sci->setReadOnly(true);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, 1);
+    if (!wasModified) m_sci->SendScintilla(QsciScintillaBase::SCI_SETSAVEPOINT);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETCURRENTPOS, savedPos);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETANCHOR, savedAnchor);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_COLOURISE, start, start + utf8.size());
+    applyCommandRowPills();
+}
+
+void RcxEditor::setCommandRow2Text(const QString& line) {
+    if (m_sci->lines() <= 1) return;
+    QString s = line;
+    s.replace('\n', ' ');
+    s.replace('\r', ' ');
+
+    bool wasReadOnly = m_sci->isReadOnly();
+    bool wasModified = m_sci->SendScintilla(QsciScintillaBase::SCI_GETMODIFY);
+    long savedPos    = m_sci->SendScintilla(QsciScintillaBase::SCI_GETCURRENTPOS);
+    long savedAnchor = m_sci->SendScintilla(QsciScintillaBase::SCI_GETANCHOR);
+
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, 0);
+    m_sci->setReadOnly(false);
+
+    long start = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 1);
+    long end   = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, 1);
     QByteArray utf8 = s.toUtf8();
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, start);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, end);

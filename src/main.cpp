@@ -107,23 +107,16 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
 #include <atomic>
 #include <random>
 
-struct TestLiveData {
-    int32_t valA = 100;
-    int32_t valB = 200;
-    int32_t valC = 300;
-    int32_t valD = 400;
-};
-
-static TestLiveData* g_testData = nullptr;
+static uint8_t* g_testData = nullptr;
+static constexpr int kTestDataSize = 128;
 static std::atomic<bool> g_testRunning{false};
 
 static void testLiveThread() {
     std::mt19937 rng(42);
-    std::uniform_int_distribution<int> dist(0, 3);
+    std::uniform_int_distribution<int> dist(0, kTestDataSize - 1);
     while (g_testRunning.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        int32_t* fields = &g_testData->valA;
-        fields[dist(rng)]++;
+        g_testData[dist(rng)]++;
     }
 }
 
@@ -411,8 +404,8 @@ void MainWindow::newFile() {
 
 void MainWindow::selfTest() {
 #ifdef _WIN32
-    // Allocate test struct — lives until process exit
-    g_testData = new TestLiveData();
+    // Allocate 128 bytes — lives until process exit
+    g_testData = new uint8_t[kTestDataSize]();
     g_testRunning = true;
     std::thread(testLiveThread).detach();
 
@@ -424,22 +417,26 @@ void MainWindow::selfTest() {
         | PROCESS_QUERY_INFORMATION,
         FALSE, GetCurrentProcessId());
     doc->provider = std::make_shared<ProcessProvider>(
-        hProc, base, (int)sizeof(TestLiveData), "ReclassX.exe");
+        hProc, base, kTestDataSize, "ReclassX.exe");
     doc->tree.baseAddress = base;
 
     Node root;
     root.kind = NodeKind::Struct;
-    root.name = "TestLiveData";
-    root.structTypeName = "TestLiveData";
+    root.name = "MyClass";
+    root.structTypeName = "MyClass";
     root.parentId = 0;
     root.offset = 0;
     int ri = doc->tree.addNode(root);
     uint64_t rootId = doc->tree.nodes[ri].id;
 
-    { Node n; n.kind = NodeKind::Int32; n.name = "valA"; n.parentId = rootId; n.offset = 0;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Int32; n.name = "valB"; n.parentId = rootId; n.offset = 4;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Int32; n.name = "valC"; n.parentId = rootId; n.offset = 8;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Int32; n.name = "valD"; n.parentId = rootId; n.offset = 12; doc->tree.addNode(n); }
+    for (int i = 0; i < 16; i++) {
+        Node n;
+        n.kind = NodeKind::Hex64;
+        n.name = QStringLiteral("field_%1").arg(i);
+        n.parentId = rootId;
+        n.offset = i * 8;
+        doc->tree.addNode(n);
+    }
 
     createTab(doc);
 #endif

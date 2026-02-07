@@ -44,6 +44,7 @@ public:
 
     void applySelectionOverlay(const QSet<uint64_t>& selIds);
     void setCommandRowText(const QString& line);
+    void setCommandRow2Text(const QString& line);
     void setEditorFont(const QString& fontName);
     static void setGlobalFontName(const QString& fontName);
 
@@ -76,7 +77,6 @@ private:
     // ── Hover cursor + highlight ──
     QPoint m_lastHoverPos;
     bool   m_hoverInside = false;
-    bool   m_cursorOverridden = false;
     uint64_t m_hoveredNodeId = 0;
     int      m_hoveredLine = -1;
     QSet<uint64_t> m_currentSelIds;

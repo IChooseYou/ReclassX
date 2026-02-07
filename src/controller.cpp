@@ -175,8 +175,10 @@ void RcxController::connectEditor(RcxEditor* editor) {
     // Inline editing signals
     connect(editor, &RcxEditor::inlineEditCommitted,
             this, [this](int nodeIdx, int subLine, EditTarget target, const QString& text) {
-        // CommandRow BaseAddress/Source edit has nodeIdx=-1
-        if (nodeIdx < 0 && target != EditTarget::BaseAddress && target != EditTarget::Source) { refresh(); return; }
+        // CommandRow BaseAddress/Source edit has nodeIdx=-1; CommandRow2 edits too
+        if (nodeIdx < 0 && target != EditTarget::BaseAddress && target != EditTarget::Source
+            && target != EditTarget::RootClassType && target != EditTarget::RootClassName
+            && target != EditTarget::Alignas) { refresh(); return; }
         switch (target) {
         case EditTarget::Name: {
             if (text.isEmpty()) break;
@@ -423,10 +425,59 @@ void RcxController::connectEditor(RcxEditor* editor) {
             }
             break;
         }
+        case EditTarget::RootClassType: {
+            QString kw = text.toLower().trimmed();
+            if (kw != QStringLiteral("struct") && kw != QStringLiteral("class") && kw != QStringLiteral("enum")) break;
+            for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+                auto& n = m_doc->tree.nodes[i];
+                if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                    QString oldKw = n.resolvedClassKeyword();
+                    if (oldKw != kw) {
+                        m_doc->undoStack.push(new RcxCommand(this,
+                            cmd::ChangeClassKeyword{n.id, oldKw, kw}));
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        case EditTarget::RootClassName: {
+            // Rename the root struct's structTypeName
+            if (!text.isEmpty()) {
+                for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+                    auto& n = m_doc->tree.nodes[i];
+                    if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                        QString oldName = n.structTypeName;
+                        if (oldName != text) {
+                            m_doc->undoStack.push(new RcxCommand(this,
+                                cmd::ChangeStructTypeName{n.id, oldName, text}));
+                        }
+                        break;
+                    }
+                }
+            }
+            break;
+        }
         case EditTarget::ArrayIndex:
         case EditTarget::ArrayCount:
             // Array navigation removed - these cases are unreachable
             break;
+        case EditTarget::Alignas: {
+            // Parse "alignas(N)" → N
+            int paren = text.indexOf('(');
+            int close = text.indexOf(')');
+            if (paren < 0 || close < 0) break;
+            int newAlign = text.mid(paren + 1, close - paren - 1).toInt();
+            if (newAlign <= 0) break;
+            for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+                const auto& n = m_doc->tree.nodes[i];
+                if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                    performRealignment(n.id, newAlign);
+                    break;
+                }
+            }
+            break;
+        }
         }
         // Always refresh to restore canonical text (handles parse failures, no-ops, etc.)
         refresh();
@@ -447,11 +498,26 @@ void RcxController::refresh() {
         for (auto& lm : m_lastResult.meta) {
             if (lm.nodeIdx < 0 || lm.nodeIdx >= m_doc->tree.nodes.size()) continue;
             int64_t offset = m_doc->tree.computeOffset(lm.nodeIdx);
-            int sz = m_doc->tree.nodes[lm.nodeIdx].byteSize();
-            for (int64_t b = offset; b < offset + sz; b++) {
-                if (m_changedOffsets.contains(b)) {
-                    lm.dataChanged = true;
-                    break;
+            const Node& node = m_doc->tree.nodes[lm.nodeIdx];
+
+            if (isHexPreview(node.kind)) {
+                // Per-byte tracking for hex preview nodes
+                int lineOff = (node.kind == NodeKind::Padding) ? lm.subLine * 8 : 0;
+                int byteCount = lm.lineByteCount;
+                for (int b = 0; b < byteCount; b++) {
+                    if (m_changedOffsets.contains(offset + lineOff + b)) {
+                        lm.changedByteIndices.append(b);
+                        lm.dataChanged = true;
+                    }
+                }
+            } else {
+                // Existing boolean logic for non-hex nodes
+                int sz = node.byteSize();
+                for (int64_t b = offset; b < offset + sz; b++) {
+                    if (m_changedOffsets.contains(b)) {
+                        lm.dataChanged = true;
+                        break;
+                    }
                 }
             }
         }
@@ -718,6 +784,14 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             int idx = tree.indexOfId(c.nodeId);
             if (idx >= 0)
                 tree.nodes[idx].structTypeName = isUndo ? c.oldName : c.newName;
+        } else if constexpr (std::is_same_v<T, cmd::ChangeClassKeyword>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].classKeyword = isUndo ? c.oldKeyword : c.newKeyword;
+        } else if constexpr (std::is_same_v<T, cmd::ChangeOffset>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].offset = isUndo ? c.oldOffset : c.newOffset;
         }
     }, command);
 
@@ -1052,7 +1126,7 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
             int to   = qMax(m_anchorLine, line);
             for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
                 uint64_t nid = m_lastResult.meta[i].nodeId;
-                if (nid != 0 && nid != kCommandRowId) m_selIds.insert(effectiveId(i, nid));
+                if (nid != 0 && nid != kCommandRowId && nid != kCommandRow2Id) m_selIds.insert(effectiveId(i, nid));
             }
         }
     } else { // Ctrl+Shift
@@ -1064,7 +1138,7 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
             int to   = qMax(m_anchorLine, line);
             for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
                 uint64_t nid = m_lastResult.meta[i].nodeId;
-                if (nid != 0 && nid != kCommandRowId) m_selIds.insert(effectiveId(i, nid));
+                if (nid != 0 && nid != kCommandRowId && nid != kCommandRow2Id) m_selIds.insert(effectiveId(i, nid));
             }
         }
     }
@@ -1090,6 +1164,100 @@ void RcxController::clearSelection() {
 void RcxController::applySelectionOverlays() {
     for (auto* editor : m_editors)
         editor->applySelectionOverlay(m_selIds);
+}
+
+void RcxController::performRealignment(uint64_t structId, int targetAlign) {
+    auto& tree = m_doc->tree;
+    int rootIdx = tree.indexOfId(structId);
+    if (rootIdx < 0) return;
+
+    // Gather direct children sorted by offset
+    QVector<int> kids = tree.childrenOf(structId);
+    std::sort(kids.begin(), kids.end(), [&](int a, int b) {
+        return tree.nodes[a].offset < tree.nodes[b].offset;
+    });
+
+    // Separate into real nodes (non-Padding) and padding nodes
+    struct NodeInfo { uint64_t id; int offset; int size; };
+    QVector<NodeInfo> realNodes;
+    QVector<uint64_t> padIds;
+
+    for (int ci : kids) {
+        const Node& child = tree.nodes[ci];
+        int sz = (child.kind == NodeKind::Struct || child.kind == NodeKind::Array)
+            ? tree.structSpan(child.id) : child.byteSize();
+        if (child.kind == NodeKind::Padding)
+            padIds.append(child.id);
+        else
+            realNodes.append({child.id, child.offset, sz});
+    }
+
+    auto roundUp = [](int x, int align) -> int {
+        return align <= 1 ? x : ((x + align - 1) / align) * align;
+    };
+
+    // Compute new offsets for real nodes
+    struct OffChange { uint64_t id; int oldOff; int newOff; };
+    QVector<OffChange> offChanges;
+    int cursor = 0;
+    for (auto& rn : realNodes) {
+        int newOff = roundUp(cursor, targetAlign);
+        if (newOff != rn.offset)
+            offChanges.append({rn.id, rn.offset, newOff});
+        rn.offset = newOff;  // update local copy for gap computation
+        cursor = newOff + rn.size;
+    }
+
+    // Compute where padding is needed (gaps between consecutive nodes)
+    struct PadInsert { int offset; int size; };
+    QVector<PadInsert> padsNeeded;
+
+    for (int i = 0; i < realNodes.size(); i++) {
+        int gapStart = (i == 0) ? 0 : realNodes[i - 1].offset + realNodes[i - 1].size;
+        int gapEnd = realNodes[i].offset;
+        if (gapEnd > gapStart)
+            padsNeeded.append({gapStart, gapEnd - gapStart});
+    }
+
+    // Check if anything actually changes
+    if (offChanges.isEmpty() && padIds.isEmpty() && padsNeeded.isEmpty())
+        return;
+
+    // Apply as undoable macro
+    bool wasSuppressed = m_suppressRefresh;
+    m_suppressRefresh = true;
+    m_doc->undoStack.beginMacro(QStringLiteral("Realign to %1").arg(targetAlign));
+
+    // 1. Remove all existing Padding nodes (no offset adjustments — we recompute)
+    for (uint64_t pid : padIds) {
+        int idx = tree.indexOfId(pid);
+        if (idx < 0) continue;
+        QVector<Node> subtree;
+        subtree.append(tree.nodes[idx]);
+        m_doc->undoStack.push(new RcxCommand(this,
+            cmd::Remove{pid, subtree, {}}));
+    }
+
+    // 2. Reposition real nodes
+    for (const auto& oc : offChanges) {
+        m_doc->undoStack.push(new RcxCommand(this,
+            cmd::ChangeOffset{oc.id, oc.oldOff, oc.newOff}));
+    }
+
+    // 3. Insert new padding in gaps
+    for (const auto& pi : padsNeeded) {
+        Node pad;
+        pad.kind = NodeKind::Padding;
+        pad.parentId = structId;
+        pad.offset = pi.offset;
+        pad.arrayLen = pi.size;
+        pad.id = tree.reserveId();
+        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{pad}));
+    }
+
+    m_doc->undoStack.endMacro();
+    m_suppressRefresh = wasSuppressed;
+    if (!m_suppressRefresh) refresh();
 }
 
 void RcxController::updateCommandRow() {
@@ -1128,8 +1296,26 @@ void RcxController::updateCommandRow() {
             .arg(elide(src, 40), elide(addr, 24), elide(sym, 40));
     }
 
-    for (auto* ed : m_editors)
+    // Build row 2: root class type + name + alignment
+    QString row2;
+    for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+        const auto& n = m_doc->tree.nodes[i];
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+            QString keyword = n.resolvedClassKeyword();
+            QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
+            int alignment = m_doc->tree.computeStructAlignment(n.id);
+            row2 = QStringLiteral("%1 %2  alignas(%3)")
+                .arg(keyword, className).arg(alignment);
+            break;
+        }
+    }
+    if (row2.isEmpty())
+        row2 = QStringLiteral("struct <no class>  alignas(1)");
+
+    for (auto* ed : m_editors) {
         ed->setCommandRowText(row);
+        ed->setCommandRow2Text(row2);
+    }
     emit selectionChanged(m_selIds.size());
 }
 

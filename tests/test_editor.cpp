@@ -3,12 +3,43 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QFocusEvent>
+#include <QMouseEvent>
 #include <QFile>
 #include <Qsci/qsciscintilla.h>
+#include <Qsci/qsciscintillabase.h>
 #include "editor.h"
 #include "core.h"
 
 using namespace rcx;
+
+// ── Cursor test helpers ──
+
+static Qt::CursorShape viewportCursor(RcxEditor* editor) {
+    return editor->scintilla()->viewport()->cursor().shape();
+}
+
+static QPoint colToViewport(QsciScintilla* sci, int line, int col) {
+    long pos = sci->SendScintilla(QsciScintillaBase::SCI_FINDCOLUMN,
+                                  (unsigned long)line, (long)col);
+    int x = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION, 0, pos);
+    int y = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION, 0, pos);
+    return QPoint(x, y);
+}
+
+static void sendMouseMove(QWidget* viewport, const QPoint& pos) {
+    QMouseEvent move(QEvent::MouseMove, QPointF(pos), QPointF(pos),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(viewport, &move);
+}
+
+static void sendLeftClick(QWidget* viewport, const QPoint& pos) {
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), QPointF(pos),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(viewport, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos), QPointF(pos),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(viewport, &release);
+}
 
 // 0x7D0 bytes of PEB-like data with recognizable values at key offsets
 static BufferProvider makeTestProvider() {
@@ -363,7 +394,7 @@ private slots:
 
     // ── Test: inline edit lifecycle (begin → commit → re-edit) ──
     void testInlineEditReEntry() {
-        // Move cursor to line 2 (first field inside struct; line 0=CommandRow, 1=header)
+        // Move cursor to line 2 (first field; line 0=CommandRow, 1=CommandRow2, root header suppressed)
         m_editor->scintilla()->setCursorPosition(2, 0);
 
         // Should not be editing
@@ -470,19 +501,36 @@ private slots:
     void testHeaderLineEdit() {
         m_editor->applyDocument(m_result);
 
-        // Line 1 should be the struct header (line 0 is CommandRow)
-        const LineMeta* lm = m_editor->metaForLine(1);
+        // Root header is suppressed; find a nested struct header (e.g. CSDVersion)
+        int headerLine = -1;
+        for (int i = 0; i < m_result.meta.size(); i++) {
+            if (m_result.meta[i].lineKind == LineKind::Header &&
+                m_result.meta[i].foldHead) {
+                headerLine = i;
+                break;
+            }
+        }
+        QVERIFY2(headerLine >= 0, "Should have a nested struct header");
+
+        const LineMeta* lm = m_editor->metaForLine(headerLine);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Header);
 
-        // Type edit on header should succeed (has typename _PEB64)
-        bool ok = m_editor->beginInlineEdit(EditTarget::Type, 1);
+        // Scroll to header line to ensure visibility
+        m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_ENSUREVISIBLE, (unsigned long)headerLine);
+        m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_GOTOLINE, (unsigned long)headerLine);
+        QApplication::processEvents();
+
+        // Type edit on header should succeed
+        bool ok = m_editor->beginInlineEdit(EditTarget::Type, headerLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
         m_editor->cancelInlineEdit();
 
         // Name edit on header should succeed
-        ok = m_editor->beginInlineEdit(EditTarget::Name, 1);
+        ok = m_editor->beginInlineEdit(EditTarget::Name, headerLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
         m_editor->cancelInlineEdit();
@@ -617,7 +665,7 @@ private slots:
     void testColumnSpanHitTest() {
         m_editor->applyDocument(m_result);
 
-        // Line 2 is a field line (UInt8), verify spans are valid (line 0=CommandRow, 1=header)
+        // Line 2 is a field line (UInt8), verify spans are valid (line 0=CommandRow, 1=CommandRow2)
         const LineMeta* lm = m_editor->metaForLine(2);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Field);
@@ -664,7 +712,7 @@ private slots:
     void testSelectedNodeIndices() {
         m_editor->applyDocument(m_result);
 
-        // Put cursor on first field line (line 2; 0=CommandRow, 1=header)
+        // Put cursor on first field line (line 2; 0=CommandRow, 1=CommandRow2, root header suppressed)
         m_editor->scintilla()->setCursorPosition(2, 0);
         QSet<int> sel = m_editor->selectedNodeIndices();
         QCOMPARE(sel.size(), 1);
@@ -675,7 +723,7 @@ private slots:
         QVERIFY(sel.contains(lm->nodeIdx));
     }
 
-    // ── Test: header line no longer contains "// base:" ──
+    // ── Test: composed text does not contain "// base:" (moved to cmd bar) ──
     void testBaseAddressDisplay() {
         NodeTree tree = makeTestTree();
         tree.baseAddress = 0x10;
@@ -684,27 +732,14 @@ private slots:
 
         m_editor->applyDocument(result);
 
-        // Line 1 should be the struct header (line 0 is CommandRow)
-        const LineMeta* lm = m_editor->metaForLine(1);
+        // Root header is suppressed; verify no "// base:" anywhere in output
+        QVERIFY2(!result.text.contains("// base:"),
+                 "Composed text should not contain '// base:' (consolidated into cmd bar)");
+
+        // Line 2 should be the first field (root header suppressed)
+        const LineMeta* lm = m_editor->metaForLine(2);
         QVERIFY(lm);
-        QCOMPARE(lm->lineKind, LineKind::Header);
-        QVERIFY(lm->isRootHeader);
-
-        // Get header line text — should NOT contain "// base:" (consolidated into cmd bar)
-        QString lineText;
-        int len = (int)m_editor->scintilla()->SendScintilla(
-            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
-        if (len > 0) {
-            QByteArray buf(len + 1, '\0');
-            m_editor->scintilla()->SendScintilla(
-                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
-            lineText = QString::fromUtf8(buf.constData(), len).trimmed();
-        }
-
-        QVERIFY2(!lineText.contains("// base:"),
-                 qPrintable("Header should no longer contain '// base:', got: " + lineText));
-        QVERIFY2(lineText.contains("struct"),
-                 qPrintable("Header should contain 'struct', got: " + lineText));
+        QCOMPARE(lm->lineKind, LineKind::Field);
 
         m_editor->applyDocument(m_result);
     }
@@ -817,7 +852,7 @@ private slots:
     void testValueEditCommitUpdatesSignal() {
         m_editor->applyDocument(m_result);
 
-        // Line 2 = first UInt8 field (InheritedAddressSpace)
+        // Line 2 = first UInt8 field (InheritedAddressSpace, root header suppressed)
         const LineMeta* lm = m_editor->metaForLine(2);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Field);
@@ -877,6 +912,192 @@ private slots:
         // Cancel and reset
         m_editor->cancelInlineEdit();
         m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: cursor stays Arrow after left-click on a node ──
+    void testCursorAfterLeftClick() {
+        m_editor->applyDocument(m_result);
+
+        // Click on a field line at the indent area (col 0 — not over editable text)
+        QPoint clickPos = colToViewport(m_editor->scintilla(), 2, 0);
+        sendLeftClick(m_editor->scintilla()->viewport(), clickPos);
+        QApplication::processEvents();
+
+        // Cursor must be Arrow — QScintilla must NOT have set it to IBeam
+        QCOMPARE(viewportCursor(m_editor), Qt::ArrowCursor);
+        QVERIFY(!m_editor->isEditing());
+    }
+
+    // ── Test: cursor is IBeam only over trimmed name text, Arrow over padding ──
+    void testCursorShapeOverText() {
+        m_editor->applyDocument(m_result);
+
+        // Line 2 is a field (UInt8 InheritedAddressSpace)
+        const LineMeta* lm = m_editor->metaForLine(2);
+        QVERIFY(lm);
+
+        // Get the name span (padded to kColName width)
+        ColumnSpan ns = RcxEditor::nameSpan(*lm, lm->effectiveTypeW, lm->effectiveNameW);
+        QVERIFY(ns.valid);
+
+        // Move mouse to the start of the name span (should be over text)
+        QPoint textPos = colToViewport(m_editor->scintilla(), 2, ns.start + 1);
+        sendMouseMove(m_editor->scintilla()->viewport(), textPos);
+        QApplication::processEvents();
+        QCOMPARE(viewportCursor(m_editor), Qt::IBeamCursor);
+
+        // Move mouse to far padding area (past end of text, within padded span)
+        // The padded span ends at ns.end but the trimmed text is shorter
+        QPoint padPos = colToViewport(m_editor->scintilla(), 2, ns.end - 1);
+        sendMouseMove(m_editor->scintilla()->viewport(), padPos);
+        QApplication::processEvents();
+        // Should be Arrow (padding whitespace, not actual text)
+        QCOMPARE(viewportCursor(m_editor), Qt::ArrowCursor);
+    }
+
+    // ── Test: cursor is PointingHand over type column text ──
+    void testCursorShapeOverType() {
+        m_editor->applyDocument(m_result);
+
+        const LineMeta* lm = m_editor->metaForLine(2);
+        QVERIFY(lm);
+
+        // Type span starts after the fold column + indent
+        ColumnSpan ts = RcxEditor::typeSpan(*lm, lm->effectiveTypeW);
+        QVERIFY(ts.valid);
+
+        // Move to start of type text (e.g. "uint8_t")
+        QPoint typePos = colToViewport(m_editor->scintilla(), 2, ts.start + 1);
+        sendMouseMove(m_editor->scintilla()->viewport(), typePos);
+        QApplication::processEvents();
+        QCOMPARE(viewportCursor(m_editor), Qt::PointingHandCursor);
+    }
+
+    // ── Test: cursor is PointingHand over fold column ──
+    void testCursorShapeInFoldColumn() {
+        m_editor->applyDocument(m_result);
+        QApplication::processEvents();
+
+        // Root header (line 2) has fold suppressed; find a nested struct with foldHead
+        int foldLine = -1;
+        for (int i = 0; i < m_result.meta.size(); i++) {
+            if (m_result.meta[i].foldHead && m_result.meta[i].lineKind == LineKind::Header) {
+                foldLine = i;
+                break;
+            }
+        }
+        QVERIFY2(foldLine >= 0, "Should have at least one foldable struct header");
+
+        const LineMeta* lm = m_editor->metaForLine(foldLine);
+        QVERIFY(lm);
+        QVERIFY(lm->foldHead);
+
+        // Scroll to ensure the fold line is visible
+        m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_ENSUREVISIBLE, (unsigned long)foldLine);
+        m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_GOTOLINE, (unsigned long)foldLine);
+        QApplication::processEvents();
+
+        // Fold indicator is always at cols 0-2 (kFoldCol=3), regardless of depth
+        QPoint foldPos = colToViewport(m_editor->scintilla(), foldLine, 1);
+        QVERIFY2(foldPos.y() > 0, qPrintable(QString("Fold line %1 should be visible, got y=%2")
+            .arg(foldLine).arg(foldPos.y())));
+        sendMouseMove(m_editor->scintilla()->viewport(), foldPos);
+        QApplication::processEvents();
+        QCOMPARE(viewportCursor(m_editor), Qt::PointingHandCursor);
+    }
+
+    // ── Test: no IBeam after click then mouse-move to non-editable area ──
+    void testNoIBeamAfterClickThenMove() {
+        m_editor->applyDocument(m_result);
+
+        // Click on a field to select the node
+        const LineMeta* lm = m_editor->metaForLine(2);
+        QVERIFY(lm);
+        ColumnSpan ns = RcxEditor::nameSpan(*lm, lm->effectiveTypeW, lm->effectiveNameW);
+        QVERIFY(ns.valid);
+
+        // Click in the name area (selects the node)
+        QPoint clickPos = colToViewport(m_editor->scintilla(), 2, ns.start + 1);
+        sendLeftClick(m_editor->scintilla()->viewport(), clickPos);
+        QApplication::processEvents();
+
+        // Now move mouse to col 0 (indent area — non-editable)
+        QPoint emptyPos = colToViewport(m_editor->scintilla(), 2, 0);
+        sendMouseMove(m_editor->scintilla()->viewport(), emptyPos);
+        QApplication::processEvents();
+
+        // Must be Arrow, NOT IBeam (QScintilla must not have leaked its cursor state)
+        QCOMPARE(viewportCursor(m_editor), Qt::ArrowCursor);
+        QVERIFY(!m_editor->isEditing());
+    }
+
+    // ── Test: CommandRow2 exists at line 1 ──
+    void testCommandRow2Exists() {
+        m_editor->applyDocument(m_result);
+
+        // Line 1 should be CommandRow2
+        const LineMeta* lm = m_editor->metaForLine(1);
+        QVERIFY(lm);
+        QCOMPARE(lm->lineKind, LineKind::CommandRow2);
+        QCOMPARE(lm->nodeId, kCommandRow2Id);
+        QCOMPARE(lm->nodeIdx, -1);
+
+        // Type/Name/Value should be rejected on CommandRow2
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Type, 1));
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Name, 1));
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Value, 1));
+        QVERIFY(!m_editor->isEditing());
+
+        // RootClassName should be allowed on CommandRow2
+        m_editor->setCommandRow2Text(QStringLiteral("struct _PEB64"));
+        bool ok = m_editor->beginInlineEdit(EditTarget::RootClassName, 1);
+        QVERIFY2(ok, "RootClassName edit should be allowed on CommandRow2");
+        QVERIFY(m_editor->isEditing());
+        m_editor->cancelInlineEdit();
+    }
+
+    // ── Test: alignas span detection on CommandRow2 ──
+    void testAlignasSpanOnCommandRow2() {
+        m_editor->applyDocument(m_result);
+
+        // Set CommandRow2 with alignas
+        m_editor->setCommandRow2Text(QStringLiteral("struct _PEB64  alignas(8)"));
+
+        // Line 1 is CommandRow2
+        const LineMeta* lm = m_editor->metaForLine(1);
+        QVERIFY(lm);
+        QCOMPARE(lm->lineKind, LineKind::CommandRow2);
+
+        // Alignas IS allowed as inline edit (picker-based)
+        QVERIFY(m_editor->beginInlineEdit(EditTarget::Alignas, 1));
+        QVERIFY(m_editor->isEditing());
+        m_editor->cancelInlineEdit();
+
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: root header/footer are suppressed (CommandRow2 replaces them) ──
+    void testRootFoldSuppressed() {
+        m_editor->applyDocument(m_result);
+
+        // Root struct header is completely suppressed from output.
+        // Line 0 = CommandRow, Line 1 = CommandRow2, Line 2 = first field.
+        const LineMeta* lm2 = m_editor->metaForLine(2);
+        QVERIFY(lm2);
+        QCOMPARE(lm2->lineKind, LineKind::Field);
+
+        // Verify no root header exists anywhere in the output
+        bool foundRootHeader = false;
+        for (int i = 0; i < m_result.meta.size(); i++) {
+            if (m_result.meta[i].isRootHeader) {
+                foundRootHeader = true;
+                break;
+            }
+        }
+        QVERIFY2(!foundRootHeader,
+                 "Root header should be suppressed from compose output");
     }
 };
 

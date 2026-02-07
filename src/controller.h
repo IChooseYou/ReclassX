@@ -128,6 +128,7 @@ private:
     void connectEditor(RcxEditor* editor);
     void handleMarginClick(RcxEditor* editor, int margin, int line, Qt::KeyboardModifiers mods);
     void updateCommandRow();
+    void performRealignment(uint64_t structId, int targetAlign);
     void attachToProcess(uint32_t pid, const QString& processName);
     void switchToSavedSource(int idx);
     void pushSavedSourcesToEditors();

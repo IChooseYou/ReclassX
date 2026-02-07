@@ -261,7 +261,9 @@ static void emitStruct(GenContext& ctx, uint64_t structId) {
             if (refIdx >= 0 && !ctx.emittedIds.contains(child.refId)
                 && !ctx.forwardDeclared.contains(child.refId)) {
                 QString fwdName = ctx.structName(ctx.tree.nodes[refIdx]);
-                ctx.output += QStringLiteral("struct %1;\n").arg(fwdName);
+                QString fwdKw = ctx.tree.nodes[refIdx].resolvedClassKeyword();
+                if (fwdKw == QStringLiteral("enum")) fwdKw = QStringLiteral("struct");
+                ctx.output += QStringLiteral("%1 %2;\n").arg(fwdKw, fwdName);
                 ctx.forwardDeclared.insert(child.refId);
             }
         }
@@ -273,7 +275,9 @@ static void emitStruct(GenContext& ctx, uint64_t structId) {
     int structSize = ctx.tree.structSpan(structId, &ctx.childMap);
 
     ctx.output += QStringLiteral("#pragma pack(push, 1)\n");
-    ctx.output += QStringLiteral("struct %1 {\n").arg(typeName);
+    QString kw = node.resolvedClassKeyword();
+    if (kw == QStringLiteral("enum")) kw = QStringLiteral("struct");  // enum is cosmetic
+    ctx.output += QStringLiteral("%1 %2 {\n").arg(kw, typeName);
 
     emitStructBody(ctx, structId);
 

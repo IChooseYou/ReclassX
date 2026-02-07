@@ -122,6 +122,9 @@ inline constexpr uint32_t flagsFor(NodeKind k) {
 inline constexpr bool isHexPreview(NodeKind k) {
     return flagsFor(k) & KF_HexPreview;
 }
+inline constexpr bool isHexNode(NodeKind k) {
+    return k >= NodeKind::Hex8 && k <= NodeKind::Hex64;
+}
 
 inline QStringList allTypeNamesForUI(bool stripBrackets = false) {
     QStringList out;
@@ -157,6 +160,7 @@ struct Node {
     NodeKind kind       = NodeKind::Hex8;
     QString  name;
     QString  structTypeName;  // Struct/Array: optional type name (e.g., "IMAGE_DOS_HEADER")
+    QString  classKeyword;    // "struct", "class", or "enum" (empty = "struct")
     uint64_t parentId   = 0;   // 0 = root (no parent)
     int      offset     = 0;
     int      arrayLen   = 1;   // Array: element count
@@ -184,6 +188,8 @@ struct Node {
         o["name"]      = name;
         if (!structTypeName.isEmpty())
             o["structTypeName"] = structTypeName;
+        if (!classKeyword.isEmpty() && classKeyword != QStringLiteral("struct"))
+            o["classKeyword"] = classKeyword;
         o["parentId"]  = QString::number(parentId);
         o["offset"]    = offset;
         o["arrayLen"]  = arrayLen;
@@ -199,6 +205,7 @@ struct Node {
         n.kind      = kindFromString(o["kind"].toString());
         n.name      = o["name"].toString();
         n.structTypeName = o["structTypeName"].toString();
+        n.classKeyword = o["classKeyword"].toString();
         n.parentId  = o["parentId"].toString("0").toULongLong();
         n.offset    = o["offset"].toInt(0);
         n.arrayLen  = o["arrayLen"].toInt(1);
@@ -207,6 +214,11 @@ struct Node {
         n.refId     = o["refId"].toString("0").toULongLong();
         n.elementKind = kindFromString(o["elementKind"].toString("UInt8"));
         return n;
+    }
+
+    // Resolved class keyword (never empty)
+    QString resolvedClassKeyword() const {
+        return classKeyword.isEmpty() ? QStringLiteral("struct") : classKeyword;
     }
 
     // Helper: is this a string-like array (char[] or wchar_t[])?
@@ -339,6 +351,9 @@ struct NodeTree {
         return qMax(declaredSize, maxEnd);
     }
 
+    // Compute natural alignment of a struct (max alignment of direct children)
+    int computeStructAlignment(uint64_t structId) const;
+
     // Batch selection normalizers
     QSet<uint64_t> normalizePreferAncestors(const QSet<uint64_t>& ids) const;
     QSet<uint64_t> normalizePreferDescendants(const QSet<uint64_t>& ids) const;
@@ -371,13 +386,16 @@ struct NodeTree {
 // ── LineMeta ──
 
 enum class LineKind : uint8_t {
-    CommandRow,   // line 0 only, synthetic UI
+    CommandRow,   // line 0: source + address
+    CommandRow2,  // line 1: root class type + name
     Header, Field, Continuation, Footer, ArrayElementSeparator
 };
 
 static constexpr uint64_t kCommandRowId   = UINT64_MAX;
+static constexpr uint64_t kCommandRow2Id  = UINT64_MAX - 1;
 static constexpr int      kCommandRowLine = 0;
-static constexpr int      kFirstDataLine  = 1;
+static constexpr int      kCommandRow2Line = 1;
+static constexpr int      kFirstDataLine  = 2;
 static constexpr uint64_t kFooterIdBit    = 0x8000000000000000ULL;
 
 struct LineMeta {
@@ -400,13 +418,15 @@ struct LineMeta {
     QString  offsetText;
     uint32_t markerMask     = 0;
     bool     dataChanged    = false;  // true if any byte in this node changed since last refresh
+    QVector<int> changedByteIndices;  // Hex preview: which byte indices (0-based) changed on this line
+    int      lineByteCount  = 0;     // Hex preview: actual data byte count on this line
     int      effectiveTypeW = 14;  // Per-line type column width used for rendering
     int      effectiveNameW = 22;  // Per-line name column width used for rendering
     QString  pointerTargetName;    // Resolved target type name for Pointer32/64 (empty = "void")
 };
 
 inline bool isSyntheticLine(const LineMeta& lm) {
-    return lm.lineKind == LineKind::CommandRow;
+    return lm.lineKind == LineKind::CommandRow || lm.lineKind == LineKind::CommandRow2;
 }
 
 // ── Layout Info ──
@@ -443,12 +463,15 @@ namespace cmd {
     struct ChangePointerRef { uint64_t nodeId;
                               uint64_t oldRefId, newRefId; };
     struct ChangeStructTypeName { uint64_t nodeId; QString oldName, newName; };
+    struct ChangeClassKeyword { uint64_t nodeId; QString oldKeyword, newKeyword; };
+    struct ChangeOffset { uint64_t nodeId; int oldOffset, newOffset; };
 }
 
 using Command = std::variant<
     cmd::ChangeKind, cmd::Rename, cmd::Collapse,
     cmd::Insert, cmd::Remove, cmd::ChangeBase, cmd::WriteBytes,
-    cmd::ChangeArrayMeta, cmd::ChangePointerRef, cmd::ChangeStructTypeName
+    cmd::ChangeArrayMeta, cmd::ChangePointerRef, cmd::ChangeStructTypeName,
+    cmd::ChangeClassKeyword, cmd::ChangeOffset
 >;
 
 // ── Column spans (for inline editing) ──
@@ -460,7 +483,8 @@ struct ColumnSpan {
 };
 
 enum class EditTarget { Name, Type, Value, BaseAddress, Source, ArrayIndex, ArrayCount,
-                        ArrayElementType, ArrayElementCount, PointerTarget };
+                        ArrayElementType, ArrayElementCount, PointerTarget,
+                        RootClassType, RootClassName, Alignas };
 
 // Column layout constants (shared with format.cpp span computation)
 inline constexpr int kFoldCol     = 3;   // 3-char fold indicator prefix per line
@@ -560,6 +584,42 @@ inline ColumnSpan commandRowAddrSpan(const QString& lineText) {
     while (end < lineText.size() && !lineText[end].isSpace()) end++;
     if (end <= start) return {};
     return {start, end, true};
+}
+
+// ── CommandRow2 spans ──
+// Line format: "struct ClassName  alignas(8)"
+
+inline ColumnSpan commandRow2TypeSpan(const QString& lineText) {
+    int start = 0;
+    while (start < lineText.size() && lineText[start].isSpace()) start++;
+    if (start >= lineText.size()) return {};
+    int end = lineText.indexOf(' ', start);
+    if (end <= start) return {start, (int)lineText.size(), true};
+    return {start, end, true};
+}
+
+inline ColumnSpan commandRow2NameSpan(const QString& lineText) {
+    int start = 0;
+    while (start < lineText.size() && lineText[start].isSpace()) start++;
+    int space = lineText.indexOf(' ', start);
+    if (space < 0) return {};
+    int nameStart = space + 1;
+    while (nameStart < lineText.size() && lineText[nameStart].isSpace()) nameStart++;
+    if (nameStart >= lineText.size()) return {};
+    // Name ends before "alignas(" if present, otherwise at line end
+    int nameEnd = lineText.indexOf(QStringLiteral("  alignas("), nameStart);
+    if (nameEnd < 0) nameEnd = lineText.size();
+    while (nameEnd > nameStart && lineText[nameEnd - 1].isSpace()) nameEnd--;
+    if (nameEnd <= nameStart) return {};
+    return {nameStart, nameEnd, true};
+}
+
+inline ColumnSpan commandRow2AlignasSpan(const QString& lineText) {
+    int idx = lineText.indexOf(QStringLiteral("alignas("));
+    if (idx < 0) return {};
+    int end = lineText.indexOf(')', idx);
+    if (end < 0) return {};
+    return {idx, end + 1, true};
 }
 
 // ── Array element type/count spans (within type column of array headers) ──
