@@ -742,52 +742,21 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
                                      int subLine, const QPoint& globalPos) {
     auto icon = [](const char* name) { return QIcon(QStringLiteral(":/vsicons/%1").arg(name)); };
 
-    // Empty area or CommandRow: show full creation menu
-    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) {
-        QMenu menu;
-        menu.addAction(icon("add.svg"), "&Add Hex64 Field", [this]() {
-            insertNode(0, -1, NodeKind::Hex64, "newField");
-        });
-        menu.addAction(icon("symbol-structure.svg"), "Add &Struct", [this]() {
-            insertNode(0, -1, NodeKind::Struct, "NewClass");
-        });
-        menu.addSeparator();
-        menu.addAction(icon("diff-added.svg"), "Append &128 bytes", [this]() {
-            m_suppressRefresh = true;
-            m_doc->undoStack.beginMacro(QStringLiteral("Append 128 bytes"));
-            for (int i = 0; i < 16; i++)
-                insertNode(0, -1, NodeKind::Hex64,
-                           QStringLiteral("field_%1").arg(i));
-            m_doc->undoStack.endMacro();
-            m_suppressRefresh = false;
-            refresh();
-        });
-        menu.addSeparator();
-        menu.addAction(icon("arrow-left.svg"), "&Undo", [this]() {
-            m_doc->undoStack.undo();
-        })->setEnabled(m_doc->undoStack.canUndo());
-        menu.addAction(icon("arrow-right.svg"), "&Redo", [this]() {
-            m_doc->undoStack.redo();
-        })->setEnabled(m_doc->undoStack.canRedo());
-        menu.addSeparator();
-        menu.addAction(icon("clippy.svg"), "Copy All as &Text", [editor]() {
-            QApplication::clipboard()->setText(editor->scintilla()->text());
-        });
-        menu.exec(globalPos);
-        return;
-    }
-    uint64_t clickedId = m_doc->tree.nodes[nodeIdx].id;
+    const bool hasNode = nodeIdx >= 0 && nodeIdx < m_doc->tree.nodes.size();
 
-    // Right-click selection policy: if not in selection, select only this node
-    if (!m_selIds.contains(clickedId)) {
-        m_selIds.clear();
-        m_selIds.insert(clickedId);
-        m_anchorLine = line;
-        applySelectionOverlays();
+    // Selection policy
+    if (hasNode) {
+        uint64_t clickedId = m_doc->tree.nodes[nodeIdx].id;
+        if (!m_selIds.contains(clickedId)) {
+            m_selIds.clear();
+            m_selIds.insert(clickedId);
+            m_anchorLine = line;
+            applySelectionOverlays();
+        }
     }
 
-    // Multi-select batch menu
-    if (m_selIds.size() > 1) {
+    // Multi-select batch actions at top
+    if (hasNode && m_selIds.size() > 1) {
         QMenu menu;
         int count = m_selIds.size();
         QSet<uint64_t> ids = m_selIds;
@@ -819,81 +788,115 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         return;
     }
 
-    const Node& node = m_doc->tree.nodes[nodeIdx];
-    uint64_t nodeId = node.id;
-    uint64_t parentId = node.parentId;
-
     QMenu menu;
 
-    // Inline edit actions — position cursor on the right-clicked line
-    bool isEditable = node.kind != NodeKind::Struct && node.kind != NodeKind::Array
-                      && node.kind != NodeKind::Padding && node.kind != NodeKind::Mat4x4
-                      && m_doc->provider->isWritable();
-    if (isEditable) {
-        menu.addAction(icon("edit.svg"), "Edit &Value\tEnter", [editor, line]() {
-            editor->beginInlineEdit(EditTarget::Value, line);
-        });
-    }
+    // ── Node-specific actions (only when clicking on a node) ──
+    if (hasNode) {
+        const Node& node = m_doc->tree.nodes[nodeIdx];
+        uint64_t nodeId = node.id;
+        uint64_t parentId = node.parentId;
 
-    menu.addAction(icon("rename.svg"), "Re&name\tF2", [editor, line]() {
-        editor->beginInlineEdit(EditTarget::Name, line);
-    });
-
-    menu.addAction(icon("symbol-structure.svg"), "Change &Type\tT", [editor, line]() {
-        editor->beginInlineEdit(EditTarget::Type, line);
-    });
-
-    menu.addSeparator();
-
-    menu.addAction(icon("add.svg"), "&Add Field Below\tInsert", [this, parentId]() {
-        insertNode(parentId, -1, NodeKind::Hex64, "newField");
-    });
-
-    if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) {
-        menu.addAction(icon("diff-added.svg"), "Add &Child", [this, nodeId]() {
-            insertNode(nodeId, 0, NodeKind::Hex64, "newField");
-        });
-        if (node.collapsed) {
-            menu.addAction(icon("expand-all.svg"), "&Expand", [this, nodeId]() {
-                int ni = m_doc->tree.indexOfId(nodeId);
-                if (ni >= 0) toggleCollapse(ni);
-            });
-        } else {
-            menu.addAction(icon("collapse-all.svg"), "&Collapse", [this, nodeId]() {
-                int ni = m_doc->tree.indexOfId(nodeId);
-                if (ni >= 0) toggleCollapse(ni);
+        bool isEditable = node.kind != NodeKind::Struct && node.kind != NodeKind::Array
+                          && node.kind != NodeKind::Padding && node.kind != NodeKind::Mat4x4
+                          && m_doc->provider->isWritable();
+        if (isEditable) {
+            menu.addAction(icon("edit.svg"), "Edit &Value\tEnter", [editor, line]() {
+                editor->beginInlineEdit(EditTarget::Value, line);
             });
         }
+
+        menu.addAction(icon("rename.svg"), "Re&name\tF2", [editor, line]() {
+            editor->beginInlineEdit(EditTarget::Name, line);
+        });
+
+        menu.addAction(icon("symbol-structure.svg"), "Change &Type\tT", [editor, line]() {
+            editor->beginInlineEdit(EditTarget::Type, line);
+        });
+
+        menu.addSeparator();
+
+        menu.addAction(icon("add.svg"), "&Add Field Below\tInsert", [this, parentId]() {
+            insertNode(parentId, -1, NodeKind::Hex64, "newField");
+        });
+
+        if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) {
+            menu.addAction(icon("diff-added.svg"), "Add &Child", [this, nodeId]() {
+                insertNode(nodeId, 0, NodeKind::Hex64, "newField");
+            });
+            if (node.collapsed) {
+                menu.addAction(icon("expand-all.svg"), "&Expand", [this, nodeId]() {
+                    int ni = m_doc->tree.indexOfId(nodeId);
+                    if (ni >= 0) toggleCollapse(ni);
+                });
+            } else {
+                menu.addAction(icon("collapse-all.svg"), "&Collapse", [this, nodeId]() {
+                    int ni = m_doc->tree.indexOfId(nodeId);
+                    if (ni >= 0) toggleCollapse(ni);
+                });
+            }
+        }
+
+        menu.addAction(icon("files.svg"), "D&uplicate\tCtrl+D", [this, nodeId]() {
+            int ni = m_doc->tree.indexOfId(nodeId);
+            if (ni >= 0) duplicateNode(ni);
+        });
+        menu.addAction(icon("trash.svg"), "&Delete\tDelete", [this, nodeId]() {
+            int ni = m_doc->tree.indexOfId(nodeId);
+            if (ni >= 0) removeNode(ni);
+        });
+
+        menu.addSeparator();
+
+        menu.addAction(icon("link.svg"), "Copy &Address", [this, nodeId]() {
+            int ni = m_doc->tree.indexOfId(nodeId);
+            if (ni < 0) return;
+            uint64_t addr = m_doc->tree.baseAddress + m_doc->tree.computeOffset(ni);
+            QApplication::clipboard()->setText(
+                QStringLiteral("0x") + QString::number(addr, 16).toUpper());
+        });
+
+        menu.addAction(icon("whole-word.svg"), "Copy &Offset", [this, nodeId]() {
+            int ni = m_doc->tree.indexOfId(nodeId);
+            if (ni < 0) return;
+            int off = m_doc->tree.nodes[ni].offset;
+            QApplication::clipboard()->setText(
+                QStringLiteral("+0x") + QString::number(off, 16).toUpper().rightJustified(4, '0'));
+        });
+
+        menu.addSeparator();
     }
 
-    menu.addAction(icon("files.svg"), "D&uplicate\tCtrl+D", [this, nodeId]() {
-        int ni = m_doc->tree.indexOfId(nodeId);
-        if (ni >= 0) duplicateNode(ni);
+    // ── Always-available actions ──
+
+    menu.addAction(icon("add.svg"), "Add Hex64 at Root", [this]() {
+        insertNode(0, -1, NodeKind::Hex64, "newField");
     });
-    menu.addAction(icon("trash.svg"), "&Delete\tDelete", [this, nodeId]() {
-        int ni = m_doc->tree.indexOfId(nodeId);
-        if (ni >= 0) removeNode(ni);
+    menu.addAction(icon("symbol-structure.svg"), "Add Struct at Root", [this]() {
+        insertNode(0, -1, NodeKind::Struct, "NewClass");
+    });
+    menu.addAction(icon("diff-added.svg"), "Append 128 bytes", [this]() {
+        m_suppressRefresh = true;
+        m_doc->undoStack.beginMacro(QStringLiteral("Append 128 bytes"));
+        for (int i = 0; i < 16; i++)
+            insertNode(0, -1, NodeKind::Hex64,
+                       QStringLiteral("field_%1").arg(i));
+        m_doc->undoStack.endMacro();
+        m_suppressRefresh = false;
+        refresh();
     });
 
     menu.addSeparator();
 
-    menu.addAction(icon("link.svg"), "Copy &Address", [this, nodeId]() {
-        int ni = m_doc->tree.indexOfId(nodeId);
-        if (ni < 0) return;
-        uint64_t addr = m_doc->tree.baseAddress + m_doc->tree.computeOffset(ni);
-        QApplication::clipboard()->setText(
-            QStringLiteral("0x") + QString::number(addr, 16).toUpper());
-    });
+    menu.addAction(icon("arrow-left.svg"), "Undo", [this]() {
+        m_doc->undoStack.undo();
+    })->setEnabled(m_doc->undoStack.canUndo());
+    menu.addAction(icon("arrow-right.svg"), "Redo", [this]() {
+        m_doc->undoStack.redo();
+    })->setEnabled(m_doc->undoStack.canRedo());
 
-    menu.addAction(icon("whole-word.svg"), "Copy &Offset", [this, nodeId]() {
-        int ni = m_doc->tree.indexOfId(nodeId);
-        if (ni < 0) return;
-        int off = m_doc->tree.nodes[ni].offset;
-        QApplication::clipboard()->setText(
-            QStringLiteral("+0x") + QString::number(off, 16).toUpper().rightJustified(4, '0'));
-    });
+    menu.addSeparator();
 
-    menu.addAction(icon("clippy.svg"), "Copy All as &Text", [editor]() {
+    menu.addAction(icon("clippy.svg"), "Copy All as Text", [editor]() {
         QApplication::clipboard()->setText(editor->scintilla()->text());
     });
 
