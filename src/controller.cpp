@@ -177,8 +177,7 @@ void RcxController::connectEditor(RcxEditor* editor) {
             this, [this](int nodeIdx, int subLine, EditTarget target, const QString& text) {
         // CommandRow BaseAddress/Source edit has nodeIdx=-1; CommandRow2 edits too
         if (nodeIdx < 0 && target != EditTarget::BaseAddress && target != EditTarget::Source
-            && target != EditTarget::RootClassType && target != EditTarget::RootClassName
-            && target != EditTarget::Alignas) { refresh(); return; }
+            && target != EditTarget::RootClassType && target != EditTarget::RootClassName) { refresh(); return; }
         switch (target) {
         case EditTarget::Name: {
             if (text.isEmpty()) break;
@@ -462,22 +461,6 @@ void RcxController::connectEditor(RcxEditor* editor) {
         case EditTarget::ArrayCount:
             // Array navigation removed - these cases are unreachable
             break;
-        case EditTarget::Alignas: {
-            // Parse "alignas(N)" → N
-            int paren = text.indexOf('(');
-            int close = text.indexOf(')');
-            if (paren < 0 || close < 0) break;
-            int newAlign = text.mid(paren + 1, close - paren - 1).toInt();
-            if (newAlign <= 0) break;
-            for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
-                const auto& n = m_doc->tree.nodes[i];
-                if (n.parentId == 0 && n.kind == NodeKind::Struct) {
-                    performRealignment(n.id, newAlign);
-                    break;
-                }
-            }
-            break;
-        }
         }
         // Always refresh to restore canonical text (handles parse failures, no-ops, etc.)
         refresh();
@@ -1000,6 +983,23 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
                     if (ni >= 0) toggleCollapse(ni);
                 });
             }
+
+            // Align Members submenu
+            if (node.kind == NodeKind::Struct) {
+                int curAlign = m_doc->tree.computeStructAlignment(nodeId);
+                auto* alignMenu = menu.addMenu(icon("symbol-ruler.svg"), "Align &Members");
+                static const int alignValues[] = {1, 2, 4, 8, 16, 32, 64, 128};
+                for (int av : alignValues) {
+                    QString label = (av == 1)
+                        ? QStringLiteral("1 (packed)")
+                        : QString::number(av);
+                    auto* act = alignMenu->addAction(label, [this, nodeId, av]() {
+                        performRealignment(nodeId, av);
+                    });
+                    act->setCheckable(true);
+                    act->setChecked(av == curAlign);
+                }
+            }
         }
 
         menu.addAction(icon("files.svg"), "D&uplicate\tCtrl+D", [this, nodeId]() {
@@ -1033,6 +1033,33 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
     }
 
     // ── Always-available actions ──
+
+    // Root struct alignment (always available if a root struct exists)
+    {
+        uint64_t rootStructId = 0;
+        for (const auto& n : m_doc->tree.nodes) {
+            if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                rootStructId = n.id;
+                break;
+            }
+        }
+        if (rootStructId != 0) {
+            int curAlign = m_doc->tree.computeStructAlignment(rootStructId);
+            auto* alignMenu = menu.addMenu(icon("symbol-ruler.svg"), "Align &Members");
+            static const int alignValues[] = {1, 2, 4, 8, 16, 32, 64, 128};
+            for (int av : alignValues) {
+                QString label = (av == 1)
+                    ? QStringLiteral("1 (packed)")
+                    : QString::number(av);
+                auto* act = alignMenu->addAction(label, [this, rootStructId, av]() {
+                    performRealignment(rootStructId, av);
+                });
+                act->setCheckable(true);
+                act->setChecked(av == curAlign);
+            }
+            menu.addSeparator();
+        }
+    }
 
     menu.addAction(icon("add.svg"), "Add Hex64 at Root", [this]() {
         insertNode(0, -1, NodeKind::Hex64, "newField");
@@ -1324,21 +1351,20 @@ void RcxController::updateCommandRow() {
             .arg(elide(src, 40), elide(addr, 24), elide(sym, 40));
     }
 
-    // Build row 2: root class type + name + alignment
+    // Build row 2: root class type + name
     QString row2;
     for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
         const auto& n = m_doc->tree.nodes[i];
         if (n.parentId == 0 && n.kind == NodeKind::Struct) {
             QString keyword = n.resolvedClassKeyword();
             QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
-            int alignment = m_doc->tree.computeStructAlignment(n.id);
-            row2 = QStringLiteral("%1 %2  alignas(%3)")
-                .arg(keyword, className).arg(alignment);
+            row2 = QStringLiteral("%1 %2")
+                .arg(keyword, className);
             break;
         }
     }
     if (row2.isEmpty())
-        row2 = QStringLiteral("struct <no class>  alignas(1)");
+        row2 = QStringLiteral("struct <no class>");
 
     for (auto* ed : m_editors) {
         ed->setCommandRowText(row);

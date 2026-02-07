@@ -81,8 +81,7 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
         if (id == 1 && (m_editState.target == EditTarget::Type
                      || m_editState.target == EditTarget::ArrayElementType
                      || m_editState.target == EditTarget::PointerTarget
-                     || m_editState.target == EditTarget::RootClassType
-                     || m_editState.target == EditTarget::Alignas)) {
+                     || m_editState.target == EditTarget::RootClassType)) {
             auto info = endInlineEdit();
             emit inlineEditCommitted(info.nodeIdx, info.subLine, info.target, text);
         }
@@ -314,6 +313,11 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     if (m_editState.active)
         endInlineEdit();
 
+    // Save hover state — setText() triggers viewport Leave events that would clear it
+    uint64_t savedHoverId = m_hoveredNodeId;
+    int savedHoverLine = m_hoveredLine;
+    bool savedHoverInside = m_hoverInside;
+
     m_meta = result.meta;
     m_layout = result.layout;
 
@@ -333,6 +337,11 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
 
     // Reset hint line - applySelectionOverlay will repaint indicators
     m_hintLine = -1;
+
+    // Restore hover state
+    m_hoveredNodeId = savedHoverId;
+    m_hoveredLine = savedHoverLine;
+    m_hoverInside = savedHoverInside;
 }
 
 void RcxEditor::applyMarginText(const QVector<LineMeta>& meta) {
@@ -448,6 +457,7 @@ void RcxEditor::applySelectionOverlay(const QSet<uint64_t>& selIds) {
     m_hintLine = -1;
 
     applyHoverHighlight();
+    applyHoverCursor();
 }
 
 void RcxEditor::applyHoverHighlight() {
@@ -651,10 +661,6 @@ void RcxEditor::applyCommandRowPills() {
         ColumnSpan nameSpan = commandRow2NameSpan(t2);
         fillPadded2(nameSpan);
 
-        ColumnSpan alignasSpan = commandRow2AlignasSpan(t2);
-        fillPadded2(alignasSpan);
-        if (alignasSpan.valid)
-            fillIndicatorCols(IND_HEX_DIM, line2, alignasSpan.start, alignasSpan.end);
     }
 }
 
@@ -811,15 +817,13 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
         return out.valid;
     }
 
-    // CommandRow2: root class type, name, and alignas
+    // CommandRow2: root class type and name
     if (lm->lineKind == LineKind::CommandRow2) {
-        if (t != EditTarget::RootClassType && t != EditTarget::RootClassName
-            && t != EditTarget::Alignas) return false;
+        if (t != EditTarget::RootClassType && t != EditTarget::RootClassName) return false;
         QString lineText = getLineText(m_sci, line);
         ColumnSpan s;
         if (t == EditTarget::RootClassType)       s = commandRow2TypeSpan(lineText);
-        else if (t == EditTarget::RootClassName)   s = commandRow2NameSpan(lineText);
-        else                                       s = commandRow2AlignasSpan(lineText);
+        else                                       s = commandRow2NameSpan(lineText);
         out = normalizeSpan(s, lineText, t, false);
         if (lineTextOut) *lineTextOut = lineText;
         return out.valid;
@@ -943,14 +947,12 @@ static bool hitTestTarget(QsciScintilla* sci,
         return false;
     }
 
-    // CommandRow2: root class type, name, and alignas
+    // CommandRow2: root class type and name
     if (lm.lineKind == LineKind::CommandRow2) {
         ColumnSpan ts = commandRow2TypeSpan(lineText);
         if (inSpan(ts)) { outTarget = EditTarget::RootClassType; outLine = line; return true; }
         ColumnSpan ns = commandRow2NameSpan(lineText);
         if (inSpan(ns)) { outTarget = EditTarget::RootClassName; outLine = line; return true; }
-        ColumnSpan as = commandRow2AlignasSpan(lineText);
-        if (inSpan(as)) { outTarget = EditTarget::Alignas; outLine = line; return true; }
         return false;
     }
 
@@ -1369,8 +1371,7 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     if (lm->nodeIdx < 0 && !(lm->lineKind == LineKind::CommandRow &&
         (target == EditTarget::BaseAddress || target == EditTarget::Source))
         && !(lm->lineKind == LineKind::CommandRow2 &&
-        (target == EditTarget::RootClassType || target == EditTarget::RootClassName
-         || target == EditTarget::Alignas)))
+        (target == EditTarget::RootClassType || target == EditTarget::RootClassName)))
         return false;
     // Padding: reject value editing (display-only hex bytes)
     if (target == EditTarget::Value && lm->nodeKind == NodeKind::Padding)
@@ -1462,24 +1463,6 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
             m_sci->viewport()->setCursor(Qt::ArrowCursor);
         });
     }
-    if (target == EditTarget::Alignas) {
-        QTimer::singleShot(0, this, [this]() {
-            if (!m_editState.active || m_editState.target != EditTarget::Alignas) return;
-            int len = m_editState.original.size();
-            QString spaces(len, ' ');
-            m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL,
-                                 m_editState.posStart, m_editState.posEnd);
-            m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACESEL,
-                                 (uintptr_t)0, spaces.toUtf8().constData());
-            m_sci->SendScintilla(QsciScintillaBase::SCI_GOTOPOS, m_editState.posStart);
-            m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
-            m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
-                                 (uintptr_t)1,
-                                 "alignas(1)\nalignas(4)\nalignas(8)\nalignas(16)");
-            m_sci->viewport()->setCursor(Qt::ArrowCursor);
-        });
-    }
-
     return true;
 }
 
@@ -1747,14 +1730,12 @@ void RcxEditor::paintEditableSpans(int line) {
             fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
         return;
     }
-    // CommandRow2: paint RootClassType, RootClassName, and Alignas spans
+    // CommandRow2: paint RootClassType and RootClassName spans
     if (lm->lineKind == LineKind::CommandRow2) {
         NormalizedSpan norm;
         if (resolvedSpanFor(line, EditTarget::RootClassType, norm))
             fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
         if (resolvedSpanFor(line, EditTarget::RootClassName, norm))
-            fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
-        if (resolvedSpanFor(line, EditTarget::Alignas, norm))
             fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
         return;
     }
@@ -1890,7 +1871,6 @@ void RcxEditor::applyHoverCursor() {
             case EditTarget::ArrayElementType:
             case EditTarget::PointerTarget:
             case EditTarget::RootClassType:
-            case EditTarget::Alignas:
                 desired = Qt::PointingHandCursor;
                 break;
             default:

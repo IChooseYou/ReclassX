@@ -1058,20 +1058,20 @@ private slots:
         m_editor->cancelInlineEdit();
     }
 
-    // ── Test: alignas span detection on CommandRow2 ──
-    void testAlignasSpanOnCommandRow2() {
+    // ── Test: CommandRow2 has class type and name but no alignas ──
+    void testCommandRow2NoAlignas() {
         m_editor->applyDocument(m_result);
 
-        // Set CommandRow2 with alignas
-        m_editor->setCommandRow2Text(QStringLiteral("struct _PEB64  alignas(8)"));
+        // Set CommandRow2 without alignas
+        m_editor->setCommandRow2Text(QStringLiteral("struct _PEB64"));
 
         // Line 1 is CommandRow2
         const LineMeta* lm = m_editor->metaForLine(1);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::CommandRow2);
 
-        // Alignas IS allowed as inline edit (picker-based)
-        QVERIFY(m_editor->beginInlineEdit(EditTarget::Alignas, 1));
+        // RootClassName should work
+        QVERIFY(m_editor->beginInlineEdit(EditTarget::RootClassName, 1));
         QVERIFY(m_editor->isEditing());
         m_editor->cancelInlineEdit();
 

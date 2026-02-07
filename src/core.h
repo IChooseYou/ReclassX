@@ -484,7 +484,7 @@ struct ColumnSpan {
 
 enum class EditTarget { Name, Type, Value, BaseAddress, Source, ArrayIndex, ArrayCount,
                         ArrayElementType, ArrayElementCount, PointerTarget,
-                        RootClassType, RootClassName, Alignas };
+                        RootClassType, RootClassName };
 
 // Column layout constants (shared with format.cpp span computation)
 inline constexpr int kFoldCol     = 3;   // 3-char fold indicator prefix per line
@@ -587,7 +587,7 @@ inline ColumnSpan commandRowAddrSpan(const QString& lineText) {
 }
 
 // ── CommandRow2 spans ──
-// Line format: "struct ClassName  alignas(8)"
+// Line format: "struct ClassName"
 
 inline ColumnSpan commandRow2TypeSpan(const QString& lineText) {
     int start = 0;
@@ -606,20 +606,10 @@ inline ColumnSpan commandRow2NameSpan(const QString& lineText) {
     int nameStart = space + 1;
     while (nameStart < lineText.size() && lineText[nameStart].isSpace()) nameStart++;
     if (nameStart >= lineText.size()) return {};
-    // Name ends before "alignas(" if present, otherwise at line end
-    int nameEnd = lineText.indexOf(QStringLiteral("  alignas("), nameStart);
-    if (nameEnd < 0) nameEnd = lineText.size();
+    int nameEnd = lineText.size();
     while (nameEnd > nameStart && lineText[nameEnd - 1].isSpace()) nameEnd--;
     if (nameEnd <= nameStart) return {};
     return {nameStart, nameEnd, true};
-}
-
-inline ColumnSpan commandRow2AlignasSpan(const QString& lineText) {
-    int idx = lineText.indexOf(QStringLiteral("alignas("));
-    if (idx < 0) return {};
-    int end = lineText.indexOf(')', idx);
-    if (end < 0) return {};
-    return {idx, end + 1, true};
 }
 
 // ── Array element type/count spans (within type column of array headers) ──

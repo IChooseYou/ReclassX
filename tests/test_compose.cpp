@@ -1799,34 +1799,13 @@ private slots:
         QCOMPARE(tree.computeStructAlignment(rootId), 1);
     }
 
-    void testCommandRow2AlignasSpan() {
-        // Test span detection for alignas(N) in CommandRow2 text
-        QString text = "struct MyClass  alignas(8)";
-        ColumnSpan span = commandRow2AlignasSpan(text);
-        QVERIFY(span.valid);
-        QVERIFY(span.start >= 0);
-        QVERIFY(span.end > span.start);
-
-        QString spanText = text.mid(span.start, span.end - span.start);
-        QCOMPARE(spanText, QString("alignas(8)"));
-    }
-
-    void testCommandRow2AlignasSpanNoMatch() {
-        // Text without alignas should return invalid span
+    void testCommandRow2NameSpan() {
+        // Name span should cover the class name
         QString text = "struct MyClass";
-        ColumnSpan span = commandRow2AlignasSpan(text);
-        QVERIFY(!span.valid);
-    }
-
-    void testCommandRow2NameSpanStopsBeforeAlignas() {
-        // Name span should NOT include the alignas part
-        QString text = "struct MyClass  alignas(4)";
         ColumnSpan nameSpan = commandRow2NameSpan(text);
         QVERIFY(nameSpan.valid);
 
         QString nameText = text.mid(nameSpan.start, nameSpan.end - nameSpan.start);
-        QVERIFY2(!nameText.contains("alignas"),
-                 qPrintable("Name span should not include alignas: " + nameText));
         QVERIFY2(nameText.trimmed() == "MyClass",
                  qPrintable("Name span should be 'MyClass', got: '" + nameText.trimmed() + "'"));
     }

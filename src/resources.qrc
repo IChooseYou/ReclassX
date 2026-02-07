@@ -40,5 +40,7 @@
         <file alias="rename.svg">vsicons/rename.svg</file>
         <file alias="whole-word.svg">vsicons/whole-word.svg</file>
         <file alias="selection.svg">vsicons/list-selection.svg</file>
+        <file alias="symbol-numeric.svg">vsicons/symbol-numeric.svg</file>
+        <file alias="symbol-ruler.svg">vsicons/symbol-ruler.svg</file>
     </qresource>
 </RCC>

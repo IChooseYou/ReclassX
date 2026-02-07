@@ -495,7 +495,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
         lm.markerMask = 0;
         lm.effectiveTypeW = state.typeW;
         lm.effectiveNameW = state.nameW;
-        state.emitLine(QStringLiteral("struct <no class>  alignas(1)"), lm);
+        state.emitLine(QStringLiteral("struct <no class>"), lm);
     }
 
     QVector<int> roots = state.childMap.value(0);
