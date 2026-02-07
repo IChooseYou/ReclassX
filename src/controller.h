@@ -1,9 +1,12 @@
 #pragma once
 #include "core.h"
 #include "editor.h"
+#include "providers/snapshot_provider.h"
 #include <QObject>
 #include <QUndoStack>
 #include <QUndoCommand>
+#include <QTimer>
+#include <QFutureWatcher>
 #include <memory>
 
 class QSplitter;
@@ -20,7 +23,7 @@ public:
     explicit RcxDocument(QObject* parent = nullptr);
 
     NodeTree                   tree;
-    std::unique_ptr<Provider>  provider;
+    std::shared_ptr<Provider>  provider;
     QUndoStack                 undoStack;
     QString                    filePath;
     QString                    dataPath;
@@ -65,6 +68,7 @@ class RcxController : public QObject {
     Q_OBJECT
 public:
     explicit RcxController(RcxDocument* doc, QWidget* parent = nullptr);
+    ~RcxController() override;
 
     RcxEditor* primaryEditor() const;
     RcxEditor* addSplitEditor(QSplitter* splitter);
@@ -111,12 +115,29 @@ private:
     QVector<SavedSourceEntry> m_savedSources;
     int m_activeSourceIdx = -1;
 
+    // ── Auto-refresh state ──
+    QTimer*         m_refreshTimer = nullptr;
+    QFutureWatcher<QByteArray>* m_refreshWatcher = nullptr;
+    std::unique_ptr<SnapshotProvider> m_snapshotProv;
+    QByteArray      m_prevSnapshot;
+    QSet<int64_t>   m_changedOffsets;
+    uint64_t        m_refreshGen = 0;
+    uint64_t        m_readGen = 0;
+    bool            m_readInFlight = false;
+
     void connectEditor(RcxEditor* editor);
     void handleMarginClick(RcxEditor* editor, int margin, int line, Qt::KeyboardModifiers mods);
     void updateCommandRow();
     void attachToProcess(uint32_t pid, const QString& processName);
     void switchToSavedSource(int idx);
     void pushSavedSourcesToEditors();
+
+    // ── Auto-refresh methods ──
+    void setupAutoRefresh();
+    void onRefreshTick();
+    void onReadComplete();
+    int  computeDataExtent() const;
+    void resetSnapshot();
 };
 
 } // namespace rcx

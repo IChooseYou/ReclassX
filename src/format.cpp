@@ -121,9 +121,8 @@ QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType
     // Columnar format: <type> <name> { (or no brace when collapsed)
     QString ind = indent(depth);
     QString type = fit(structTypeName(node), colType);
-    QString name = fit(node.name, colName);
     QString suffix = collapsed ? QString() : QStringLiteral("{");
-    return ind + type + SEP + name + SEP + suffix;
+    return ind + type + SEP + node.name + SEP + suffix;
 }
 
 QString fmtStructFooter(const Node& /*node*/, int depth, int /*totalSize*/) {
@@ -135,9 +134,8 @@ QString fmtStructFooter(const Node& /*node*/, int depth, int /*totalSize*/) {
 QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collapsed, int colType, int colName) {
     QString ind = indent(depth);
     QString type = fit(arrayTypeName(node.elementKind, node.arrayLen), colType);
-    QString name = fit(node.name, colName);
     QString suffix = collapsed ? QString() : QStringLiteral("{");
-    return ind + type + SEP + name + SEP + suffix;
+    return ind + type + SEP + node.name + SEP + suffix;
 }
 
 // ── Pointer header (merged pointer + struct header) ──
@@ -147,13 +145,13 @@ QString fmtPointerHeader(const Node& node, int depth, bool collapsed,
                          const QString& ptrTypeName, int colType, int colName) {
     QString ind = indent(depth);
     QString type = fit(ptrTypeName, colType);
-    QString name = fit(node.name, colName);
     if (collapsed) {
-        // Collapsed: show pointer value instead of brace
+        // Collapsed: show pointer value instead of brace (name padded for value alignment)
+        QString name = fit(node.name, colName);
         QString val = fit(readValue(node, prov, addr, 0), COL_VALUE);
         return ind + type + SEP + name + SEP + val;
     }
-    return ind + type + SEP + name + SEP + QStringLiteral("{");
+    return ind + type + SEP + node.name + SEP + QStringLiteral("{");
 }
 
 // ── Hex / ASCII preview ──
@@ -211,10 +209,6 @@ enum class ValueMode { Display, Editable };
 
 static QString readValueImpl(const Node& node, const Provider& prov,
                              uint64_t addr, int subLine, ValueMode mode) {
-    int sz = node.byteSize();
-    if (sz > 0 && !prov.isReadable(addr, sz))
-        return (mode == ValueMode::Display) ? QStringLiteral("???") : QString();
-
     const bool display = (mode == ValueMode::Display);
     switch (node.kind) {
     case NodeKind::Hex8:      return display ? hexVal(prov.readU8(addr))  : rawHex(prov.readU8(addr), 2);
@@ -328,18 +322,27 @@ QString fmtNodeLine(const Node& node, const Provider& prov,
         return ind + QString(prefixW, ' ') + val + cmtSuffix;
     }
 
-    // Padding: ASCII preview + hex bytes (compact, multi-line)
-    if (node.kind == NodeKind::Padding) {
-        const int totalSz = qMax(1, node.arrayLen);
-        const int lineOff = subLine * 8;
-        const int lineBytes = qMin(8, totalSz - lineOff);
-        QByteArray b = prov.isReadable(addr + lineOff, lineBytes)
-            ? prov.readBytes(addr + lineOff, lineBytes) : QByteArray(lineBytes, '\0');
-        QString ascii = bytesToAscii(b, lineBytes);
-        QString hex = bytesToHex(b, lineBytes).leftJustified(23, ' '); // 8*3-1
-        if (subLine == 0)
-            return ind + type + SEP + ascii + SEP + hex + cmtSuffix;
-        return ind + QString(colType + (int)SEP.size(), ' ') + ascii + SEP + hex + cmtSuffix;
+    // Hex nodes and Padding: hex byte preview
+    if (isHexPreview(node.kind)) {
+        if (node.kind == NodeKind::Padding) {
+            const int totalSz = qMax(1, node.arrayLen);
+            const int lineOff = subLine * 8;
+            const int lineBytes = qMin(8, totalSz - lineOff);
+            QByteArray b = prov.isReadable(addr + lineOff, lineBytes)
+                ? prov.readBytes(addr + lineOff, lineBytes) : QByteArray(lineBytes, '\0');
+            QString ascii = bytesToAscii(b, lineBytes);
+            QString hex = bytesToHex(b, lineBytes).leftJustified(23, ' '); // 8*3-1
+            if (subLine == 0)
+                return ind + type + SEP + ascii + SEP + hex + cmtSuffix;
+            return ind + QString(colType + (int)SEP.size(), ' ') + ascii + SEP + hex + cmtSuffix;
+        }
+        // Hex8..Hex64: single line, ASCII padded to 8 chars so hex column aligns
+        const int sz = sizeForKind(node.kind);
+        QByteArray b = prov.isReadable(addr, sz)
+            ? prov.readBytes(addr, sz) : QByteArray(sz, '\0');
+        QString ascii = bytesToAscii(b, sz).leftJustified(8, ' ');
+        QString hex = bytesToHex(b, sz).leftJustified(23, ' ');
+        return ind + type + SEP + ascii + SEP + hex + cmtSuffix;
     }
 
     QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);

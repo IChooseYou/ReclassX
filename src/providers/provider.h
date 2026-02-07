@@ -25,6 +25,10 @@ public:
     // Examples: "notepad.exe", "dump.bin", "tcp://10.0.0.1:1337"
     virtual QString name() const { return {}; }
 
+    // Whether data can change externally (e.g. live process, network socket).
+    // Auto-refresh is only active for live providers.
+    virtual bool isLive() const { return false; }
+
     // Category tag for the command row Source span.
     // Examples: "File", "Process", "Socket"
     virtual QString kind() const { return QStringLiteral("File"); }

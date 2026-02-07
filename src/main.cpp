@@ -1,5 +1,6 @@
 #include "controller.h"
 #include "generator.h"
+#include "providers/process_provider.h"
 #include <QApplication>
 #include <QMainWindow>
 #include <QMdiArea>
@@ -101,6 +102,31 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
 }
 #endif
 
+// ── Self-test: live data for verifying auto-refresh ──
+#include <thread>
+#include <atomic>
+#include <random>
+
+struct TestLiveData {
+    int32_t valA = 100;
+    int32_t valB = 200;
+    int32_t valC = 300;
+    int32_t valD = 400;
+};
+
+static TestLiveData* g_testData = nullptr;
+static std::atomic<bool> g_testRunning{false};
+
+static void testLiveThread() {
+    std::mt19937 rng(42);
+    std::uniform_int_distribution<int> dist(0, 3);
+    while (g_testRunning.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        int32_t* fields = &g_testData->valA;
+        fields[dist(rng)]++;
+    }
+}
+
 namespace rcx {
 
 class MainWindow : public QMainWindow {
@@ -110,6 +136,7 @@ public:
 
 private slots:
     void newFile();
+    void selfTest();
     void openFile();
     void saveFile();
     void saveFileAs();
@@ -380,6 +407,42 @@ void MainWindow::newFile() {
     { Node n; n.kind = NodeKind::Hex32; n.name = "flags";  n.parentId = rootId; n.offset = 12; doc->tree.addNode(n); }
 
     createTab(doc);
+}
+
+void MainWindow::selfTest() {
+#ifdef _WIN32
+    // Allocate test struct — lives until process exit
+    g_testData = new TestLiveData();
+    g_testRunning = true;
+    std::thread(testLiveThread).detach();
+
+    auto* doc = new RcxDocument(this);
+    uint64_t base = (uint64_t)g_testData;
+
+    HANDLE hProc = OpenProcess(
+        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION
+        | PROCESS_QUERY_INFORMATION,
+        FALSE, GetCurrentProcessId());
+    doc->provider = std::make_shared<ProcessProvider>(
+        hProc, base, (int)sizeof(TestLiveData), "ReclassX.exe");
+    doc->tree.baseAddress = base;
+
+    Node root;
+    root.kind = NodeKind::Struct;
+    root.name = "TestLiveData";
+    root.structTypeName = "TestLiveData";
+    root.parentId = 0;
+    root.offset = 0;
+    int ri = doc->tree.addNode(root);
+    uint64_t rootId = doc->tree.nodes[ri].id;
+
+    { Node n; n.kind = NodeKind::Int32; n.name = "valA"; n.parentId = rootId; n.offset = 0;  doc->tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Int32; n.name = "valB"; n.parentId = rootId; n.offset = 4;  doc->tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Int32; n.name = "valC"; n.parentId = rootId; n.offset = 8;  doc->tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Int32; n.name = "valD"; n.parentId = rootId; n.offset = 12; doc->tree.addNode(n); }
+
+    createTab(doc);
+#endif
 }
 
 void MainWindow::openFile() {
@@ -774,8 +837,8 @@ int main(int argc, char* argv[]) {
         window.setWindowOpacity(0.0);
     window.show();
 
-    // Always auto-open PEB64 demo on startup
-    QMetaObject::invokeMethod(&window, "newFile");
+    // Auto-open self-test tab (live data refresh test)
+    QMetaObject::invokeMethod(&window, "selfTest");
 
     if (screenshotMode) {
         QString out = "screenshot.png";

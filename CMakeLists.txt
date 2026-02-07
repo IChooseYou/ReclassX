@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport Svg)
+find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport Svg Concurrent)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 find_package(QScintilla REQUIRED)
@@ -27,7 +27,7 @@ add_executable(ReclassX
     src/processpicker.ui
     src/resources.qrc
     src/core.h
-    src/providers/buffer_provider.h src/providers/null_provider.h src/providers/process_provider.h src/providers/provider.h
+    src/providers/buffer_provider.h src/providers/null_provider.h src/providers/process_provider.h src/providers/provider.h src/providers/snapshot_provider.h
 )
 
 target_include_directories(ReclassX PRIVATE src)
@@ -36,6 +36,7 @@ target_link_libraries(ReclassX PRIVATE
     Qt6::Widgets
     Qt6::PrintSupport
     Qt6::Svg
+    Qt6::Concurrent
     QScintilla::QScintilla
     dbghelp
     psapi
@@ -125,7 +126,7 @@ if(BUILD_TESTING)
         src/processpicker.cpp src/processpicker.ui)
     target_include_directories(test_controller PRIVATE src)
     target_link_libraries(test_controller PRIVATE
-        Qt6::Widgets Qt6::PrintSupport Qt6::Test
+        Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
         QScintilla::QScintilla dbghelp psapi)
     add_test(NAME test_controller COMMAND test_controller)
 
@@ -134,7 +135,7 @@ if(BUILD_TESTING)
         src/processpicker.cpp src/processpicker.ui)
     target_include_directories(test_validation PRIVATE src)
     target_link_libraries(test_validation PRIVATE
-        Qt6::Widgets Qt6::PrintSupport Qt6::Test
+        Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
         QScintilla::QScintilla dbghelp psapi)
     add_test(NAME test_validation COMMAND test_validation)
 
@@ -149,7 +150,7 @@ if(BUILD_TESTING)
         src/processpicker.cpp src/processpicker.ui)
     target_include_directories(test_context_menu PRIVATE src)
     target_link_libraries(test_context_menu PRIVATE
-        Qt6::Widgets Qt6::PrintSupport Qt6::Test
+        Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
         QScintilla::QScintilla dbghelp psapi)
     add_test(NAME test_context_menu COMMAND test_context_menu)
 endif()

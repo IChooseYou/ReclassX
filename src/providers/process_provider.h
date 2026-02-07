@@ -55,6 +55,7 @@ public:
 
     QString name() const override { return m_name; }
     QString kind() const override { return QStringLiteral("Process"); }
+    bool isLive() const override { return true; }
 
     // getSymbol takes an absolute virtual address and resolves it to
     // "module.dll+0xOFFSET" using the cached module list.

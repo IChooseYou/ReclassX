@@ -14,6 +14,7 @@
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QtConcurrent/QtConcurrentRun>
 #ifdef _WIN32
 #include <psapi.h>
 #endif
@@ -55,7 +56,7 @@ static QString crumbFor(const rcx::NodeTree& t, uint64_t nodeId) {
 
 RcxDocument::RcxDocument(QObject* parent)
     : QObject(parent)
-    , provider(std::make_unique<NullProvider>())
+    , provider(std::make_shared<NullProvider>())
 {
     connect(&undoStack, &QUndoStack::cleanChanged, this, [this](bool clean) {
         modified = !clean;
@@ -97,7 +98,7 @@ void RcxDocument::loadData(const QString& binaryPath) {
     if (!file.open(QIODevice::ReadOnly))
         return;
     undoStack.clear();
-    provider = std::make_unique<BufferProvider>(
+    provider = std::make_shared<BufferProvider>(
         file.readAll(), QFileInfo(binaryPath).fileName());
     dataPath = binaryPath;
     tree.baseAddress = 0;
@@ -106,7 +107,7 @@ void RcxDocument::loadData(const QString& binaryPath) {
 
 void RcxDocument::loadData(const QByteArray& data) {
     undoStack.clear();
-    provider = std::make_unique<BufferProvider>(data);
+    provider = std::make_shared<BufferProvider>(data);
     tree.baseAddress = 0;
     emit documentChanged();
 }
@@ -125,6 +126,14 @@ RcxController::RcxController(RcxDocument* doc, QWidget* parent)
     : QObject(parent), m_doc(doc)
 {
     connect(m_doc, &RcxDocument::documentChanged, this, &RcxController::refresh);
+    setupAutoRefresh();
+}
+
+RcxController::~RcxController() {
+    if (m_refreshWatcher) {
+        m_refreshWatcher->cancel();
+        m_refreshWatcher->waitForFinished();
+    }
 }
 
 RcxEditor* RcxController::primaryEditor() const {
@@ -172,8 +181,8 @@ void RcxController::connectEditor(RcxEditor* editor) {
         case EditTarget::Name: {
             if (text.isEmpty()) break;
             const Node& node = m_doc->tree.nodes[nodeIdx];
-            // ASCII edit on Padding nodes
-            if (node.kind == NodeKind::Padding) {
+            // ASCII edit on Hex/Padding nodes
+            if (isHexPreview(node.kind)) {
                 setNodeValue(nodeIdx, subLine, text, /*isAscii=*/true);
             } else {
                 renameNode(nodeIdx, text);
@@ -427,7 +436,26 @@ void RcxController::connectEditor(RcxEditor* editor) {
 }
 
 void RcxController::refresh() {
-    m_lastResult = m_doc->compose();
+    // Compose against snapshot provider if active, otherwise real provider
+    if (m_snapshotProv)
+        m_lastResult = rcx::compose(m_doc->tree, *m_snapshotProv);
+    else
+        m_lastResult = m_doc->compose();
+
+    // Mark lines whose node data changed since last refresh
+    if (!m_changedOffsets.isEmpty()) {
+        for (auto& lm : m_lastResult.meta) {
+            if (lm.nodeIdx < 0 || lm.nodeIdx >= m_doc->tree.nodes.size()) continue;
+            int64_t offset = m_doc->tree.computeOffset(lm.nodeIdx);
+            int sz = m_doc->tree.nodes[lm.nodeIdx].byteSize();
+            for (int64_t b = offset; b < offset + sz; b++) {
+                if (m_changedOffsets.contains(b)) {
+                    lm.dataChanged = true;
+                    break;
+                }
+            }
+        }
+    }
 
     // Prune stale selections (nodes removed by undo/redo/delete)
     QSet<uint64_t> valid;
@@ -624,6 +652,11 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 tree.nodes[idx].collapsed = isUndo ? c.oldState : c.newState;
         } else if constexpr (std::is_same_v<T, cmd::Insert>) {
             if (isUndo) {
+                // Revert offset adjustments
+                for (const auto& adj : c.offAdjs) {
+                    int ai = tree.indexOfId(adj.nodeId);
+                    if (ai >= 0) tree.nodes[ai].offset = adj.oldOffset;
+                }
                 int idx = tree.indexOfId(c.node.id);
                 if (idx >= 0) {
                     tree.nodes.remove(idx);
@@ -631,6 +664,11 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 }
             } else {
                 tree.addNode(c.node);
+                // Apply offset adjustments
+                for (const auto& adj : c.offAdjs) {
+                    int ai = tree.indexOfId(adj.nodeId);
+                    if (ai >= 0) tree.nodes[ai].offset = adj.newOffset;
+                }
             }
         } else if constexpr (std::is_same_v<T, cmd::Remove>) {
             if (isUndo) {
@@ -661,6 +699,9 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
             if (!m_doc->provider->writeBytes(c.addr, bytes))
                 qWarning() << "WriteBytes failed at address" << Qt::hex << c.addr;
+            // Patch snapshot so compose sees the new value immediately
+            if (m_snapshotProv)
+                m_snapshotProv->patchSnapshot(c.addr, bytes.constData(), bytes.size());
         } else if constexpr (std::is_same_v<T, cmd::ChangeArrayMeta>) {
             int idx = tree.indexOfId(c.nodeId);
             if (idx >= 0) {
@@ -735,7 +776,30 @@ void RcxController::duplicateNode(int nodeIdx) {
     if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
     const Node& src = m_doc->tree.nodes[nodeIdx];
     if (src.kind == NodeKind::Struct || src.kind == NodeKind::Array) return;
-    insertNode(src.parentId, src.offset + src.byteSize(), src.kind, src.name + "_copy");
+
+    int copySize   = src.byteSize();
+    int copyOffset = src.offset + copySize;
+
+    // Shift later siblings down to make room for the copy
+    QVector<cmd::OffsetAdj> adjs;
+    if (src.parentId != 0) {
+        auto siblings = m_doc->tree.childrenOf(src.parentId);
+        for (int si : siblings) {
+            if (si == nodeIdx) continue;
+            auto& sib = m_doc->tree.nodes[si];
+            if (sib.offset >= copyOffset)
+                adjs.append({sib.id, sib.offset, sib.offset + copySize});
+        }
+    }
+
+    Node n;
+    n.kind     = src.kind;
+    n.name     = src.name + "_copy";
+    n.parentId = src.parentId;
+    n.offset   = copyOffset;
+    n.id       = m_doc->tree.reserveId();
+
+    m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n, adjs}));
 }
 
 void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
@@ -1101,10 +1165,11 @@ void RcxController::attachToProcess(uint32_t pid, const QString& processName) {
     }
 
     m_doc->undoStack.clear();
-    m_doc->provider = std::make_unique<ProcessProvider>(
+    m_doc->provider = std::make_shared<ProcessProvider>(
         hProc, base, regionSize, processName);
     m_doc->dataPath.clear();
     m_doc->tree.baseAddress = base;
+    resetSnapshot();
     emit m_doc->documentChanged();
     refresh();
 #else
@@ -1146,6 +1211,104 @@ void RcxController::pushSavedSourcesToEditors() {
     }
     for (auto* editor : m_editors)
         editor->setSavedSources(display);
+}
+
+// ── Auto-refresh ──
+
+void RcxController::setupAutoRefresh() {
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setInterval(2000);
+    connect(m_refreshTimer, &QTimer::timeout, this, &RcxController::onRefreshTick);
+    m_refreshTimer->start();
+
+    m_refreshWatcher = new QFutureWatcher<QByteArray>(this);
+    connect(m_refreshWatcher, &QFutureWatcher<QByteArray>::finished,
+            this, &RcxController::onReadComplete);
+}
+
+void RcxController::onRefreshTick() {
+    if (m_readInFlight) return;
+    if (!m_doc->provider || !m_doc->provider->isLive()) return;
+    if (m_suppressRefresh) return;
+    for (auto* editor : m_editors)
+        if (editor->isEditing()) return;
+
+    int extent = computeDataExtent();
+    if (extent <= 0) return;
+
+    m_readInFlight = true;
+    m_readGen = m_refreshGen;
+
+    // Capture shared_ptr copy — keeps provider alive during async read
+    auto prov = m_doc->provider;
+    m_refreshWatcher->setFuture(QtConcurrent::run([prov, extent]() -> QByteArray {
+        return prov->readBytes(0, extent);
+    }));
+}
+
+void RcxController::onReadComplete() {
+    m_readInFlight = false;
+
+    // Stale read (provider changed while we were reading) — discard
+    if (m_readGen != m_refreshGen) return;
+
+    QByteArray newData = m_refreshWatcher->result();
+
+    // Fast path: no changes at all — skip full recompose
+    if (!m_prevSnapshot.isEmpty() && m_prevSnapshot.size() == newData.size()
+        && memcmp(m_prevSnapshot.constData(), newData.constData(), newData.size()) == 0)
+        return;
+
+    // Compute which byte offsets changed
+    m_changedOffsets.clear();
+    if (!m_prevSnapshot.isEmpty()) {
+        int compareLen = qMin(m_prevSnapshot.size(), newData.size());
+        const char* oldP = m_prevSnapshot.constData();
+        const char* newP = newData.constData();
+        for (int i = 0; i < compareLen; i++) {
+            if (oldP[i] != newP[i])
+                m_changedOffsets.insert(i);
+        }
+        // Bytes beyond old snapshot are all "new"
+        for (int i = compareLen; i < newData.size(); i++)
+            m_changedOffsets.insert(i);
+    }
+    m_prevSnapshot = newData;
+
+    // Update or create snapshot provider
+    if (m_snapshotProv)
+        m_snapshotProv->updateSnapshot(std::move(newData));
+    else
+        m_snapshotProv = std::make_unique<SnapshotProvider>(m_doc->provider, std::move(newData));
+
+    refresh();
+
+    // Clear changed offsets after refresh consumed them
+    m_changedOffsets.clear();
+}
+
+int RcxController::computeDataExtent() const {
+    // Use provider size as the extent (for ProcessProvider this is the module/region size)
+    int provSize = m_doc->provider->size();
+    if (provSize > 0) return provSize;
+
+    // Fallback: walk tree to find maximum byte offset
+    int maxEnd = 0;
+    for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+        int64_t off = m_doc->tree.computeOffset(i);
+        int sz = m_doc->tree.nodes[i].byteSize();
+        int end = (int)(off + sz);
+        if (end > maxEnd) maxEnd = end;
+    }
+    return maxEnd;
+}
+
+void RcxController::resetSnapshot() {
+    m_refreshGen++;
+    m_readInFlight = false;
+    m_snapshotProv.reset();
+    m_prevSnapshot.clear();
+    m_changedOffsets.clear();
 }
 
 void RcxController::handleMarginClick(RcxEditor* editor, int margin,

@@ -399,6 +399,7 @@ struct LineMeta {
     int      arrayElementIdx = -1; // Index of this element within parent array (-1 if not array element)
     QString  offsetText;
     uint32_t markerMask     = 0;
+    bool     dataChanged    = false;  // true if any byte in this node changed since last refresh
     int      effectiveTypeW = 14;  // Per-line type column width used for rendering
     int      effectiveNameW = 22;  // Per-line name column width used for rendering
     QString  pointerTargetName;    // Resolved target type name for Pointer32/64 (empty = "void")
@@ -431,7 +432,7 @@ namespace cmd {
                          QVector<OffsetAdj> offAdjs; };
     struct Rename      { uint64_t nodeId; QString oldName, newName; };
     struct Collapse    { uint64_t nodeId; bool oldState, newState; };
-    struct Insert      { Node node; };
+    struct Insert      { Node node; QVector<OffsetAdj> offAdjs; };
     struct Remove      { uint64_t nodeId; QVector<Node> subtree;
                          QVector<OffsetAdj> offAdjs; };
     struct ChangeBase  { uint64_t oldBase, newBase; };
@@ -486,8 +487,8 @@ inline ColumnSpan nameSpanFor(const LineMeta& lm, int typeW = kColType, int name
     int ind = kFoldCol + lm.depth * 3;
     int start = ind + typeW + kSepWidth;
 
-    // Padding: ASCII preview takes the name column position (8 chars)
-    if (lm.nodeKind == NodeKind::Padding)
+    // Hex/Padding: ASCII preview takes the name column position (8 chars)
+    if (isHexPreview(lm.nodeKind))
         return {start, start + 8, true};
 
     return {start, start + nameW, true};
@@ -498,12 +499,12 @@ inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/, int typeW
         lm.lineKind == LineKind::ArrayElementSeparator) return {};
     int ind = kFoldCol + lm.depth * 3;
 
-    // Padding layout: [Type][sep][ASCII(8)][sep][hex bytes(23)]
-    bool isPad = (lm.nodeKind == NodeKind::Padding);
-    int valWidth = isPad ? 23 : kColValue;
+    // Hex/Padding layout: [Type][sep][ASCII(8)][sep][hex bytes(23)]
+    bool isHexPad = isHexPreview(lm.nodeKind);
+    int valWidth = isHexPad ? 23 : kColValue;
 
     if (lm.isContinuation) {
-        int prefixW = isPad
+        int prefixW = isHexPad
             ? (typeW + kSepWidth + 8 + kSepWidth)
             : (typeW + nameW + 2 * kSepWidth);
         int start = ind + prefixW;
@@ -511,7 +512,7 @@ inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/, int typeW
     }
     if (lm.lineKind != LineKind::Field) return {};
 
-    int start = isPad
+    int start = isHexPad
         ? (ind + typeW + kSepWidth + 8 + kSepWidth)
         : (ind + typeW + kSepWidth + nameW + kSepWidth);
     return {start, start + valWidth, true};
@@ -521,17 +522,17 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength, int typeW =
     if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
     int ind = kFoldCol + lm.depth * 3;
 
-    bool isPad = (lm.nodeKind == NodeKind::Padding);
-    int valWidth = isPad ? 23 : kColValue;
+    bool isHexPad = isHexPreview(lm.nodeKind);
+    int valWidth = isHexPad ? 23 : kColValue;
 
     int start;
     if (lm.isContinuation) {
-        int prefixW = isPad
+        int prefixW = isHexPad
             ? (typeW + kSepWidth + 8 + kSepWidth)
             : (typeW + nameW + 2 * kSepWidth);
         start = ind + prefixW + valWidth;
     } else {
-        start = isPad
+        start = isHexPad
             ? (ind + typeW + kSepWidth + 8 + kSepWidth + valWidth)
             : (ind + typeW + kSepWidth + nameW + kSepWidth + valWidth);
     }

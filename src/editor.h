@@ -135,6 +135,7 @@ private:
     void applyMarkers(const QVector<LineMeta>& meta);
     void applyFoldLevels(const QVector<LineMeta>& meta);
     void applyHexDimming(const QVector<LineMeta>& meta);
+    void applyDataChangedHighlight(const QVector<LineMeta>& meta);
     void applyBaseAddressColoring(const QVector<LineMeta>& meta);
     void applyCommandRowPills();
 
