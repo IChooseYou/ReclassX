@@ -540,8 +540,9 @@ void RcxController::refresh() {
                     }
                 }
             } else {
-                // Existing boolean logic for non-hex nodes
-                int sz = node.byteSize();
+                // Use structSpan for containers (byteSize returns 0 for Array-of-Struct)
+                int sz = (node.kind == NodeKind::Struct || node.kind == NodeKind::Array)
+                    ? m_doc->tree.structSpan(node.id) : node.byteSize();
                 for (int64_t b = offset; b < offset + sz; b++) {
                     if (m_changedOffsets.contains(b)) {
                         lm.dataChanged = true;
@@ -1108,16 +1109,19 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
     }
 
     menu.addAction(icon("add.svg"), "Add Hex64 at Root", [this]() {
-        insertNode(0, -1, NodeKind::Hex64, "newField");
+        uint64_t target = m_viewRootId ? m_viewRootId : 0;
+        insertNode(target, -1, NodeKind::Hex64, "newField");
     });
     menu.addAction(icon("symbol-structure.svg"), "Add Struct at Root", [this]() {
         insertNode(0, -1, NodeKind::Struct, "NewClass");
+        setViewRootId(0);  // show all so the new struct is visible
     });
     menu.addAction(icon("diff-added.svg"), "Append 128 bytes", [this]() {
+        uint64_t target = m_viewRootId ? m_viewRootId : 0;
         m_suppressRefresh = true;
         m_doc->undoStack.beginMacro(QStringLiteral("Append 128 bytes"));
         for (int i = 0; i < 16; i++)
-            insertNode(0, -1, NodeKind::Hex64,
+            insertNode(target, -1, NodeKind::Hex64,
                        QStringLiteral("field_%1").arg(i));
         m_doc->undoStack.endMacro();
         m_suppressRefresh = false;

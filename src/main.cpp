@@ -1,6 +1,5 @@
 #include "controller.h"
 #include "generator.h"
-#include "providers/process_provider.h"
 #include <QApplication>
 #include <QMainWindow>
 #include <QMdiArea>
@@ -110,24 +109,6 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 #endif
-
-// ── Self-test: live data for verifying auto-refresh ──
-#include <thread>
-#include <atomic>
-#include <random>
-
-static uint8_t* g_testData = nullptr;
-static constexpr int kTestDataSize = 128;
-static std::atomic<bool> g_testRunning{false};
-
-static void testLiveThread() {
-    std::mt19937 rng(42);
-    std::uniform_int_distribution<int> dist(0, kTestDataSize - 1);
-    while (g_testRunning.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        g_testData[dist(rng)]++;
-    }
-}
 
 namespace rcx {
 
@@ -414,118 +395,13 @@ void MainWindow::newFile() {
 }
 
 void MainWindow::selfTest() {
-#ifdef _WIN32
-    // Allocate 128 bytes — lives until process exit
-    g_testData = new uint8_t[kTestDataSize]();
-    g_testRunning = true;
-    std::thread(testLiveThread).detach();
-
-    auto* doc = new RcxDocument(this);
-    uint64_t base = (uint64_t)g_testData;
-
-    HANDLE hProc = OpenProcess(
-        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION
-        | PROCESS_QUERY_INFORMATION,
-        FALSE, GetCurrentProcessId());
-    doc->provider = std::make_shared<ProcessProvider>(
-        hProc, base, kTestDataSize, "ReclassX.exe");
-    doc->tree.baseAddress = base;
-
-    // ── Pet (root struct, 64 bytes) ──
-    {
-        Node pet;
-        pet.kind = NodeKind::Struct;
-        pet.name = "aPet";
-        pet.structTypeName = "Pet";
-        pet.parentId = 0;
-        pet.offset = 0;
-        int pi = doc->tree.addNode(pet);
-        uint64_t petId = doc->tree.nodes[pi].id;
-
-        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = petId; n.offset = 0;  n.strLen = 24; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_18"; n.parentId = petId; n.offset = 24; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Int32;     n.name = "age";    n.parentId = petId; n.offset = 32; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;     n.name = "weight"; n.parentId = petId; n.offset = 36; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = petId; n.offset = 40; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Bool;      n.name = "alive";  n.parentId = petId; n.offset = 48; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;      n.name = "field_31"; n.parentId = petId; n.offset = 49; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;     n.name = "field_32"; n.parentId = petId; n.offset = 50; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32;    n.name = "flags";  n.parentId = petId; n.offset = 52; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_38"; n.parentId = petId; n.offset = 56; doc->tree.addNode(n); }
+    // Load demo.rcx if it exists, otherwise create a blank project
+    QString demoPath = QCoreApplication::applicationDirPath() + "/demo.rcx";
+    if (QFile::exists(demoPath)) {
+        project_open(demoPath);
+    } else {
+        project_new();
     }
-
-    // ── Cat : Pet (root struct, inherits Pet at offset 0) ──
-    {
-        Node cat;
-        cat.kind = NodeKind::Struct;
-        cat.name = "aCat";
-        cat.structTypeName = "Cat";
-        cat.classKeyword = "class";
-        cat.parentId = 0;
-        cat.offset = 0;
-        int ci = doc->tree.addNode(cat);
-        uint64_t catId = doc->tree.nodes[ci].id;
-
-        // Embedded base Pet
-        Node base;
-        base.kind = NodeKind::Struct;
-        base.name = "base";
-        base.structTypeName = "Pet";
-        base.parentId = catId;
-        base.offset = 0;
-        int bi = doc->tree.addNode(base);
-        uint64_t baseId = doc->tree.nodes[bi].id;
-
-        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = baseId; n.offset = 0;  n.strLen = 24; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_18"; n.parentId = baseId; n.offset = 24; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Int32;     n.name = "age";    n.parentId = baseId; n.offset = 32; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;     n.name = "weight"; n.parentId = baseId; n.offset = 36; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = baseId; n.offset = 40; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Bool;      n.name = "alive";  n.parentId = baseId; n.offset = 48; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;      n.name = "field_31"; n.parentId = baseId; n.offset = 49; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;     n.name = "field_32"; n.parentId = baseId; n.offset = 50; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32;    n.name = "flags";  n.parentId = baseId; n.offset = 52; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_38"; n.parentId = baseId; n.offset = 56; doc->tree.addNode(n); }
-
-        // Cat's own fields after base
-        { Node n; n.kind = NodeKind::Float;  n.name = "whiskerLen"; n.parentId = catId; n.offset = 64; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt8;  n.name = "lives";     n.parentId = catId; n.offset = 68; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_45";  n.parentId = catId; n.offset = 69; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_46";  n.parentId = catId; n.offset = 70; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Bool;   n.name = "indoor";    n.parentId = catId; n.offset = 72; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_49";  n.parentId = catId; n.offset = 73; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_4A";  n.parentId = catId; n.offset = 74; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Int32;  n.name = "miceKilled"; n.parentId = catId; n.offset = 76; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_50";  n.parentId = catId; n.offset = 80; doc->tree.addNode(n); }
-    }
-
-    // ── Ball (standalone root struct) ──
-    {
-        Node ball;
-        ball.kind = NodeKind::Struct;
-        ball.name = "aBall";
-        ball.structTypeName = "Ball";
-        ball.collapsed = true;
-        ball.parentId = 0;
-        ball.offset = 0;
-        int bli = doc->tree.addNode(ball);
-        uint64_t ballId = doc->tree.nodes[bli].id;
-
-        { Node n; n.kind = NodeKind::Vec4;   n.name = "position"; n.parentId = ballId; n.offset = 0;  doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity"; n.parentId = ballId; n.offset = 16; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "speed";    n.parentId = ballId; n.offset = 28; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "color";    n.parentId = ballId; n.offset = 32; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "radius";   n.parentId = ballId; n.offset = 36; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Double; n.name = "mass";     n.parentId = ballId; n.offset = 40; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";   n.parentId = ballId; n.offset = 48; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_31"; n.parentId = ballId; n.offset = 49; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_32"; n.parentId = ballId; n.offset = 50; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "bounceCount"; n.parentId = ballId; n.offset = 52; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_38"; n.parentId = ballId; n.offset = 56; doc->tree.addNode(n); }
-    }
-
-    createTab(doc);
-#endif
 }
 
 void MainWindow::openFile() {
@@ -553,7 +429,7 @@ void MainWindow::addNode() {
     auto* ctrl = activeController();
     if (!ctrl) return;
 
-    uint64_t parentId = 0;
+    uint64_t parentId = ctrl->viewRootId();  // default to current view root
     auto* primary = ctrl->primaryEditor();
     if (primary && primary->isEditing()) return;
     if (primary) {
@@ -1123,7 +999,7 @@ int main(int argc, char* argv[]) {
         window.setWindowOpacity(0.0);
     window.show();
 
-    // Auto-open self-test tab (live data refresh test)
+    // Auto-open demo project from saved .rcx file
     QMetaObject::invokeMethod(&window, "selfTest");
 
     if (screenshotMode) {

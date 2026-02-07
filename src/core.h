@@ -240,9 +240,11 @@ struct NodeTree {
         Node copy = n;
         if (copy.id == 0) copy.id = m_nextId++;
         else if (copy.id >= m_nextId) m_nextId = copy.id + 1;
+        int idx = nodes.size();
         nodes.append(copy);
-        m_idCache.clear();
-        return nodes.size() - 1;
+        if (!m_idCache.isEmpty())
+            m_idCache[copy.id] = idx;
+        return idx;
     }
 
     // Reserve a unique ID atomically (for use before pushing undo commands)
@@ -297,11 +299,12 @@ struct NodeTree {
 
     int depthOf(int idx) const {
         int d = 0;
-        QSet<int> visited;
+        QSet<uint64_t> visited;
         int cur = idx;
         while (cur >= 0 && cur < nodes.size() && nodes[cur].parentId != 0) {
-            if (visited.contains(cur)) break;
-            visited.insert(cur);
+            uint64_t nid = nodes[cur].id;
+            if (visited.contains(nid)) break;
+            visited.insert(nid);
             cur = indexOfId(nodes[cur].parentId);
             if (cur < 0) break;
             d++;
@@ -311,11 +314,12 @@ struct NodeTree {
 
     int64_t computeOffset(int idx) const {
         int64_t total = 0;
-        QSet<int> visited;
+        QSet<uint64_t> visited;
         int cur = idx;
         while (cur >= 0 && cur < nodes.size()) {
-            if (visited.contains(cur)) break;
-            visited.insert(cur);
+            uint64_t nid = nodes[cur].id;
+            if (visited.contains(nid)) break;
+            visited.insert(nid);
             total += nodes[cur].offset;
             if (nodes[cur].parentId == 0) break;
             cur = indexOfId(nodes[cur].parentId);

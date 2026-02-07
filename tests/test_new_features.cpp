@@ -99,10 +99,10 @@ private:
         int pi = tree.addNode(pet);
         uint64_t petId = tree.nodes[pi].id;
 
-        { Node n; n.kind = NodeKind::Hex8;      n.name = "hex_00"; n.parentId = petId; n.offset = 0;  tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;      n.name = "hex_01"; n.parentId = petId; n.offset = 1;  tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = petId; n.offset = 2;  n.strLen = 32; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;     n.name = "hex_22"; n.parentId = petId; n.offset = 34; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_00"; n.parentId = petId; n.offset = 0;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = petId; n.offset = 8;  n.strLen = 16; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_18"; n.parentId = petId; n.offset = 24; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;     n.name = "hex_20"; n.parentId = petId; n.offset = 32; tree.addNode(n); }
         { Node n; n.kind = NodeKind::Hex32;     n.name = "hex_24"; n.parentId = petId; n.offset = 36; tree.addNode(n); }
         { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = petId; n.offset = 40; tree.addNode(n); }
         { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_30"; n.parentId = petId; n.offset = 48; tree.addNode(n); }
@@ -129,15 +129,21 @@ private:
         uint64_t baseId = tree.nodes[bi].id;
 
         // Children inside the nested Pet base
-        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = baseId; n.offset = 0;  n.strLen = 32; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_00"; n.parentId = baseId; n.offset = 0;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = baseId; n.offset = 8;  n.strLen = 16; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_18"; n.parentId = baseId; n.offset = 24; tree.addNode(n); }
         { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = baseId; n.offset = 32; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_28"; n.parentId = baseId; n.offset = 40; tree.addNode(n); }
 
         // Cat's own fields after base
-        { Node n; n.kind = NodeKind::Hex64; n.name = "hex_40";     n.parentId = catId; n.offset = 64; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float; n.name = "whiskerLen"; n.parentId = catId; n.offset = 72; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64; n.name = "hex_30";     n.parentId = catId; n.offset = 48; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64; n.name = "hex_38";     n.parentId = catId; n.offset = 56; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float; n.name = "whiskerLen"; n.parentId = catId; n.offset = 64; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32; n.name = "hex_44";     n.parentId = catId; n.offset = 68; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt8; n.name = "lives";      n.parentId = catId; n.offset = 72; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;  n.name = "hex_49";     n.parentId = catId; n.offset = 73; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16; n.name = "hex_4A";     n.parentId = catId; n.offset = 74; tree.addNode(n); }
         { Node n; n.kind = NodeKind::Hex32; n.name = "hex_4C";     n.parentId = catId; n.offset = 76; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt8; n.name = "lives";      n.parentId = catId; n.offset = 80; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;  n.name = "hex_51";     n.parentId = catId; n.offset = 81; tree.addNode(n); }
 
         // ── Ball (independent root struct) ──
         Node ball;
@@ -149,13 +155,16 @@ private:
         int bli = tree.addNode(ball);
         uint64_t ballId = tree.nodes[bli].id;
 
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "hex_00";   n.parentId = ballId; n.offset = 0;  tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "speed";    n.parentId = ballId; n.offset = 4;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_00";   n.parentId = ballId; n.offset = 0;  tree.addNode(n); }
         { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_08";   n.parentId = ballId; n.offset = 8;  tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Vec4;   n.name = "position"; n.parentId = ballId; n.offset = 16; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "color";    n.parentId = ballId; n.offset = 32; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "hex_24";   n.parentId = ballId; n.offset = 36; tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_28";   n.parentId = ballId; n.offset = 40; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "speed";    n.parentId = ballId; n.offset = 16; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "hex_14";   n.parentId = ballId; n.offset = 20; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_18";   n.parentId = ballId; n.offset = 24; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Vec4;   n.name = "position"; n.parentId = ballId; n.offset = 32; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_30";   n.parentId = ballId; n.offset = 48; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "color";    n.parentId = ballId; n.offset = 56; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "hex_3C";   n.parentId = ballId; n.offset = 60; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_40";   n.parentId = ballId; n.offset = 64; tree.addNode(n); }
 
         return tree;
     }
@@ -667,6 +676,147 @@ private slots:
         // health field should NOT have structId
         QStandardItem* health = player->child(0);
         QVERIFY(!health->data(Qt::UserRole + 1).isValid());
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Feature: Double-click navigation (viewRootId + scroll)
+    // ═══════════════════════════════════════════════════
+
+    void testDoubleClick_switchToCollapsedClass() {
+        // Simulates: Ball is collapsed (hidden). Double-click Ball in workspace
+        // → uncollapse, set viewRootId, compose shows only Ball with children.
+        RcxDocument doc;
+        doc.tree = makeRichTree();
+
+        // Collapse Ball (3rd root struct)
+        uint64_t ballId = 0;
+        for (auto& node : doc.tree.nodes) {
+            if (node.parentId == 0 && node.kind == NodeKind::Struct
+                && node.structTypeName == "Ball") {
+                node.collapsed = true;
+                ballId = node.id;
+                break;
+            }
+        }
+        QVERIFY(ballId != 0);
+
+        // Compose with viewRootId=0 should skip collapsed Ball
+        {
+            NullProvider prov;
+            ComposeResult result = compose(doc.tree, prov, 0);
+            bool foundSpeed = false;
+            for (const auto& lm : result.meta) {
+                int ni = lm.nodeIdx;
+                if (ni >= 0 && ni < doc.tree.nodes.size()
+                    && doc.tree.nodes[ni].name == "speed")
+                    foundSpeed = true;
+            }
+            QVERIFY2(!foundSpeed, "Collapsed Ball's children should not appear with viewRootId=0");
+        }
+
+        // Simulate double-click: uncollapse Ball + set viewRootId
+        int bi = doc.tree.indexOfId(ballId);
+        QVERIFY(bi >= 0);
+        doc.tree.nodes[bi].collapsed = false;
+
+        // Compose with viewRootId=Ball should show Ball and its children
+        {
+            NullProvider prov;
+            ComposeResult result = compose(doc.tree, prov, ballId);
+            bool foundSpeed = false, foundPosition = false, foundColor = false;
+            for (const auto& lm : result.meta) {
+                int ni = lm.nodeIdx;
+                if (ni < 0 || ni >= doc.tree.nodes.size()) continue;
+                const QString& name = doc.tree.nodes[ni].name;
+                if (name == "speed")    foundSpeed = true;
+                if (name == "position") foundPosition = true;
+                if (name == "color")    foundColor = true;
+            }
+            QVERIFY2(foundSpeed, "Ball's speed field should appear");
+            QVERIFY2(foundPosition, "Ball's position field should appear");
+            QVERIFY2(foundColor, "Ball's color field should appear");
+        }
+
+        // Pet/Cat fields should NOT be in the Ball-filtered result
+        {
+            NullProvider prov;
+            ComposeResult result = compose(doc.tree, prov, ballId);
+            bool foundPetField = false;
+            for (const auto& lm : result.meta) {
+                int ni = lm.nodeIdx;
+                if (ni < 0 || ni >= doc.tree.nodes.size()) continue;
+                if (doc.tree.nodes[ni].name == "owner") foundPetField = true;
+            }
+            QVERIFY2(!foundPetField, "Pet's owner should not appear when viewing Ball");
+        }
+    }
+
+    void testDoubleClick_fieldNavigatesToParentRoot() {
+        // Simulates: double-click a field inside Ball → walk up to Ball root,
+        // set viewRootId to Ball, and the field should be in the compose output.
+        RcxDocument doc;
+        doc.tree = makeRichTree();
+
+        // Find Ball's "speed" child
+        uint64_t ballId = 0, speedId = 0;
+        for (auto& node : doc.tree.nodes) {
+            if (node.parentId == 0 && node.structTypeName == "Ball")
+                ballId = node.id;
+        }
+        QVERIFY(ballId != 0);
+        for (auto& node : doc.tree.nodes) {
+            if (node.parentId == ballId && node.name == "speed")
+                speedId = node.id;
+        }
+        QVERIFY(speedId != 0);
+
+        // Walk up from speed to find root struct (simulating handler logic)
+        uint64_t rootId = 0;
+        uint64_t cur = speedId;
+        while (cur != 0) {
+            int idx = doc.tree.indexOfId(cur);
+            if (idx < 0) break;
+            if (doc.tree.nodes[idx].parentId == 0) { rootId = cur; break; }
+            cur = doc.tree.nodes[idx].parentId;
+        }
+        QCOMPARE(rootId, ballId);
+
+        // Compose with viewRootId=Ball should contain speed
+        NullProvider prov;
+        ComposeResult result = compose(doc.tree, prov, ballId);
+        bool foundSpeed = false;
+        for (const auto& lm : result.meta) {
+            if (lm.nodeId == speedId) { foundSpeed = true; break; }
+        }
+        QVERIFY2(foundSpeed, "speed field should be in compose output when viewing its root");
+    }
+
+    void testDoubleClick_projectRootShowsAll() {
+        // Double-click project root clears viewRootId → all non-collapsed roots shown
+        RcxDocument doc;
+        doc.tree = makeRichTree();
+
+        // Collapse Ball
+        for (auto& node : doc.tree.nodes) {
+            if (node.parentId == 0 && node.structTypeName == "Ball")
+                node.collapsed = true;
+        }
+
+        // viewRootId=0 → Pet and Cat visible, Ball hidden
+        NullProvider prov;
+        ComposeResult result = compose(doc.tree, prov, 0);
+        bool foundOwner = false, foundWhiskerLen = false, foundSpeed = false;
+        for (const auto& lm : result.meta) {
+            int ni = lm.nodeIdx;
+            if (ni < 0 || ni >= doc.tree.nodes.size()) continue;
+            const QString& name = doc.tree.nodes[ni].name;
+            if (name == "owner")      foundOwner = true;
+            if (name == "whiskerLen") foundWhiskerLen = true;
+            if (name == "speed")      foundSpeed = true;
+        }
+        QVERIFY2(foundOwner, "Pet's owner should appear with viewRootId=0");
+        QVERIFY2(foundWhiskerLen, "Cat's whiskerLen should appear with viewRootId=0");
+        QVERIFY2(!foundSpeed, "Collapsed Ball's speed should not appear with viewRootId=0");
     }
 
     // ═══════════════════════════════════════════════════

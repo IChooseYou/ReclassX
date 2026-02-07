@@ -75,17 +75,19 @@ static QString resolvePointerTarget(const NodeTree& tree, uint64_t refId) {
 }
 
 static inline uint64_t ptrToProviderAddr(const NodeTree& tree, uint64_t ptr) {
-    if (tree.baseAddress && ptr >= tree.baseAddress) return ptr - tree.baseAddress;
-    return ptr;
+    if (tree.baseAddress == 0) return ptr;
+    if (ptr >= tree.baseAddress) return ptr - tree.baseAddress;
+    return UINT64_MAX;  // Invalid: ptr below base address
 }
 
 static int64_t relOffsetFromRoot(const NodeTree& tree, int idx, uint64_t rootId) {
     int64_t total = 0;
-    QSet<int> visited;
+    QSet<uint64_t> visited;
     int cur = idx;
     while (cur >= 0 && cur < tree.nodes.size()) {
-        if (visited.contains(cur)) break;
-        visited.insert(cur);
+        uint64_t nid = tree.nodes[cur].id;
+        if (visited.contains(nid)) break;
+        visited.insert(nid);
         const Node& n = tree.nodes[cur];
         if (n.id == rootId) break;
         total += n.offset;
@@ -339,6 +341,10 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                     ? (uint64_t)prov.readU32(absAddr) : prov.readU64(absAddr);
                 if (ptrVal != 0) {
                     uint64_t pBase = ptrToProviderAddr(tree, ptrVal);
+                    if (pBase == UINT64_MAX) ptrVal = 0;  // ptr below base: invalid
+                }
+                if (ptrVal != 0) {
+                    uint64_t pBase = ptrToProviderAddr(tree, ptrVal);
                     qulonglong key = pBase ^ (node.refId * kGoldenRatio);
                     if (!state.ptrVisiting.contains(key)) {
                         state.ptrVisiting.insert(key);
@@ -506,9 +512,6 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     for (int idx : roots) {
         // If viewRootId is set, skip roots that don't match
         if (viewRootId != 0 && tree.nodes[idx].id != viewRootId)
-            continue;
-        // Skip collapsed roots unless specifically targeted by viewRootId
-        if (viewRootId == 0 && tree.nodes[idx].collapsed)
             continue;
         composeNode(state, tree, prov, idx, 0);
     }

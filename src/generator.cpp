@@ -255,6 +255,14 @@ static void emitStruct(GenContext& ctx, uint64_t structId) {
         return;
     }
 
+    // Deduplicate by struct type name (different nodes may share the same type)
+    QString typeName = ctx.structName(node);
+    if (ctx.emittedTypeNames.contains(typeName)) {
+        ctx.emittedIds.insert(structId);
+        ctx.visiting.remove(structId);
+        return;
+    }
+
     // Emit nested struct types first (dependency order)
     QVector<int> children = ctx.childMap.value(structId);
     for (int ci : children) {
@@ -283,8 +291,7 @@ static void emitStruct(GenContext& ctx, uint64_t structId) {
     }
 
     ctx.emittedIds.insert(structId);
-
-    QString typeName = ctx.structName(node);
+    ctx.emittedTypeNames.insert(typeName);
     int structSize = ctx.tree.structSpan(structId, &ctx.childMap);
 
     ctx.output += QStringLiteral("#pragma pack(push, 1)\n");

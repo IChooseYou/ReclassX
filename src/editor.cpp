@@ -1982,9 +1982,15 @@ void RcxEditor::setCommandRowText(const QString& line) {
     long start = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 0);
     long end   = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, 0);
     QByteArray utf8 = s.toUtf8();
+    long oldLen = end - start;
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, start);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, end);
     m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET, (uintptr_t)utf8.size(), utf8.constData());
+
+    // Adjust saved cursor/anchor for length change in line 0
+    long delta = (long)utf8.size() - oldLen;
+    if (savedPos > end)    savedPos    += delta;
+    if (savedAnchor > end) savedAnchor += delta;
 
     if (wasReadOnly) m_sci->setReadOnly(true);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, 1);
@@ -2011,10 +2017,16 @@ void RcxEditor::setCommandRow2Text(const QString& line) {
 
     long start = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 1);
     long end   = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, 1);
+    long oldLen = end - start;
     QByteArray utf8 = s.toUtf8();
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, start);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, end);
     m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET, (uintptr_t)utf8.size(), utf8.constData());
+
+    // Adjust saved cursor/anchor for length change in line 1
+    long delta = (long)utf8.size() - oldLen;
+    if (savedPos > end)    savedPos    += delta;
+    if (savedAnchor > end) savedAnchor += delta;
 
     if (wasReadOnly) m_sci->setReadOnly(true);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, 1);
