@@ -50,6 +50,14 @@ add_custom_target(screenshot ALL
     COMMENT "Capturing UI screenshot with class open..."
 )
 
+add_custom_target(copy_demo ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_BINARY_DIR}/demo.rcx
+        ${CMAKE_SOURCE_DIR}/src/examples/demo.rcx
+    DEPENDS screenshot
+    COMMENT "Copying demo.rcx to src/examples..."
+)
+
 set(_combine_script "${CMAKE_BINARY_DIR}/combine_sources.cmake")
 file(WRITE ${_combine_script} "
 set(_out \"${CMAKE_BINARY_DIR}/h_cpp_combined.txt\")
