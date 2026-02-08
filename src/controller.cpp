@@ -808,8 +808,11 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             }
         } else if constexpr (std::is_same_v<T, cmd::ChangePointerRef>) {
             int idx = tree.indexOfId(c.nodeId);
-            if (idx >= 0)
+            if (idx >= 0) {
                 tree.nodes[idx].refId = isUndo ? c.oldRefId : c.newRefId;
+                if (tree.nodes[idx].refId != 0)
+                    tree.nodes[idx].collapsed = true;
+            }
         } else if constexpr (std::is_same_v<T, cmd::ChangeStructTypeName>) {
             int idx = tree.indexOfId(c.nodeId);
             if (idx >= 0)
@@ -837,7 +840,7 @@ void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text,
     const Node& node = m_doc->tree.nodes[nodeIdx];
     uint64_t addr = m_doc->tree.computeOffset(nodeIdx);
 
-    // For vector sub-components, redirect to float parsing at sub-offset
+    // For vector components, redirect to float parsing at sub-offset
     NodeKind editKind = node.kind;
     if ((node.kind == NodeKind::Vec2 || node.kind == NodeKind::Vec3 ||
          node.kind == NodeKind::Vec4) && subLine >= 0) {
@@ -1370,10 +1373,10 @@ void RcxController::updateCommandRow() {
     QString src;
     QString provName = m_doc->provider->name();
     if (provName.isEmpty()) {
-        src = QStringLiteral("<Select Source>");
+        src = QStringLiteral("source\u25BE");
     } else {
-        src = QStringLiteral("%1 '%2'")
-            .arg(m_doc->provider->kind(), provName);
+        src = QStringLiteral("'%1'\u25BE")
+            .arg(provName);
     }
 
     // -- Symbol for selected node (getSymbol integration) --
@@ -1394,10 +1397,10 @@ void RcxController::updateCommandRow() {
     // Build the row. If we have a symbol, append it after the address.
     QString row;
     if (sym.isEmpty()) {
-        row = QStringLiteral("%1 Address: %2")
+        row = QStringLiteral("%1 \u203A %2")
             .arg(elide(src, 40), elide(addr, 24));
     } else {
-        row = QStringLiteral("%1 Address: %2  %3")
+        row = QStringLiteral("%1 \u203A %2  %3")
             .arg(elide(src, 40), elide(addr, 24), elide(sym, 40));
     }
 
@@ -1408,13 +1411,13 @@ void RcxController::updateCommandRow() {
         if (n.parentId == 0 && n.kind == NodeKind::Struct) {
             QString keyword = n.resolvedClassKeyword();
             QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
-            row2 = QStringLiteral("%1 %2 {")
+            row2 = QStringLiteral("%1\u25BE %2 {")
                 .arg(keyword, className);
             break;
         }
     }
     if (row2.isEmpty())
-        row2 = QStringLiteral("struct <no class> {");
+        row2 = QStringLiteral("struct\u25BE <no class> {");
 
     for (auto* ed : m_editors) {
         ed->setCommandRowText(row);

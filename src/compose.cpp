@@ -39,10 +39,12 @@ struct ComposeState {
         if (currentLine > 0) text += '\n';
         // 3-char fold indicator column: " - " expanded, " + " collapsed, "   " other
         // CommandRow has no fold prefix (flush left)
-        if (lm.lineKind == LineKind::CommandRow || lm.lineKind == LineKind::CommandRow2) {
-            // no prefix
+        if (lm.lineKind == LineKind::CommandRow || lm.lineKind == LineKind::Blank
+            || lm.lineKind == LineKind::CommandRow2
+            || (lm.lineKind == LineKind::Footer && lm.isRootHeader)) {
+            // no prefix — flush left like CommandRow2
         } else if (lm.foldHead)
-            text += lm.foldCollapsed ? QStringLiteral(" + ") : QStringLiteral(" - ");
+            text += lm.foldCollapsed ? QStringLiteral(" \u25B8 ") : QStringLiteral(" \u25BE ");
         else
             text += QStringLiteral("   ");
         text += lineText;
@@ -286,6 +288,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.depth     = depth;
         lm.lineKind   = LineKind::Footer;
         lm.nodeKind   = node.kind;
+        lm.isRootHeader = isRootHeader;  // root footer: flush left (no fold prefix)
         lm.offsetText.clear();
         lm.foldLevel  = computeFoldLevel(depth, false);
         lm.markerMask = 0;
@@ -313,7 +316,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
         QString ptrTargetName = resolvePointerTarget(tree, node.refId);
         QString ptrTypeOverride = fmt::pointerTypeName(node.kind, ptrTargetName);
 
-        // Emit merged fold header: "ptr64<Type> Name {" (expanded) or "ptr64<Type> Name -> val" (collapsed)
+        // Emit merged fold header: "Type* Name {" (expanded) or "Type* Name -> val" (collapsed)
         {
             LineMeta lm;
             lm.nodeIdx    = nodeIdx;
@@ -336,32 +339,31 @@ void composeNode(ComposeState& state, const NodeTree& tree,
 
         if (!node.collapsed) {
             int sz = node.byteSize();
+            uint64_t ptrVal = 0;
             if (prov.isValid() && sz > 0 && prov.isReadable(absAddr, sz)) {
-                uint64_t ptrVal = (node.kind == NodeKind::Pointer32)
+                ptrVal = (node.kind == NodeKind::Pointer32)
                     ? (uint64_t)prov.readU32(absAddr) : prov.readU64(absAddr);
                 if (ptrVal != 0) {
                     uint64_t pBase = ptrToProviderAddr(tree, ptrVal);
                     if (pBase == UINT64_MAX) ptrVal = 0;  // ptr below base: invalid
                 }
-                if (ptrVal != 0) {
-                    uint64_t pBase = ptrToProviderAddr(tree, ptrVal);
-                    qulonglong key = pBase ^ (node.refId * kGoldenRatio);
-                    if (!state.ptrVisiting.contains(key)) {
-                        state.ptrVisiting.insert(key);
-                        int refIdx = tree.indexOfId(node.refId);
-                        if (refIdx >= 0) {
-                            const Node& ref = tree.nodes[refIdx];
-                            if (ref.kind == NodeKind::Struct || ref.kind == NodeKind::Array)
-                                // isArrayChild=true skips header/footer, emits children only
-                                // depth (not depth+1): pointer header replaces struct header,
-                                // so children should be at depth+1, not depth+2
-                                composeParent(state, tree, prov, refIdx,
-                                              depth, pBase, ref.id,
-                                              /*isArrayChild=*/true);
-                        }
-                        state.ptrVisiting.remove(key);
-                    }
+            }
+
+            // Show referenced struct children: at dereferenced address if non-NULL,
+            // otherwise at offset 0 as a struct template preview
+            uint64_t pBase = (ptrVal != 0) ? ptrToProviderAddr(tree, ptrVal) : 0;
+            qulonglong key = pBase ^ (node.refId * kGoldenRatio);
+            if (!state.ptrVisiting.contains(key)) {
+                state.ptrVisiting.insert(key);
+                int refIdx = tree.indexOfId(node.refId);
+                if (refIdx >= 0) {
+                    const Node& ref = tree.nodes[refIdx];
+                    if (ref.kind == NodeKind::Struct || ref.kind == NodeKind::Array)
+                        composeParent(state, tree, prov, refIdx,
+                                      depth, pBase, ref.id,
+                                      /*isArrayChild=*/true);
                 }
+                state.ptrVisiting.remove(key);
             }
 
             // Footer for pointer fold
@@ -473,6 +475,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     }
 
     // Emit CommandRow as line 0 (synthetic UI line)
+    const QString cmdRowText = QStringLiteral("source\u25BE \u203A 0x0");
     {
         LineMeta lm;
         lm.nodeIdx   = -1;
@@ -485,10 +488,29 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         lm.markerMask = 0;
         lm.effectiveTypeW = state.typeW;
         lm.effectiveNameW = state.nameW;
-        state.emitLine(QStringLiteral("File  Address: 0x0"), lm);
+        state.emitLine(cmdRowText, lm);
     }
 
-    // Emit CommandRow2 as line 1 (root class type + name)
+    // Emit dotted separator (line 1) — fixed-width spaced dots in text + margin
+    {
+        // ~20 dots in text area, ~10 dots in margin, using middle dot · (U+00B7)
+        QString dots(20, QChar(0x00B7));
+        QString marginDots(10, QChar(0x00B7));
+        LineMeta lm;
+        lm.nodeIdx   = -1;
+        lm.nodeId    = kCommandRowId;
+        lm.depth     = 0;
+        lm.lineKind  = LineKind::Blank;
+        lm.foldLevel = SC_FOLDLEVELBASE;
+        lm.foldHead  = false;
+        lm.offsetText = marginDots;
+        lm.markerMask = 0;
+        lm.effectiveTypeW = state.typeW;
+        lm.effectiveNameW = state.nameW;
+        state.emitLine(dots, lm);
+    }
+
+    // Emit CommandRow2 as line 2 (root class type + name)
     {
         LineMeta lm;
         lm.nodeIdx   = -1;
@@ -501,7 +523,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         lm.markerMask = 0;
         lm.effectiveTypeW = state.typeW;
         lm.effectiveNameW = state.nameW;
-        state.emitLine(QStringLiteral("struct <no class> {"), lm);
+        state.emitLine(QStringLiteral("struct\u25BE <no class> {"), lm);
     }
 
     QVector<int> roots = state.childMap.value(0);

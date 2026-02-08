@@ -185,7 +185,7 @@ private slots:
         QCOMPARE(name, QString("float"));
 
         name = doc.resolveTypeName(NodeKind::Hex64);
-        QCOMPARE(name, QString("Hex64"));
+        QCOMPARE(name, QString("hex64"));
     }
 
     void testResolveTypeName_withAlias() {
@@ -441,10 +441,11 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov, 99999);
 
-        // Only command rows
-        QCOMPARE(result.meta.size(), 2);
+        // Only command rows + blank
+        QCOMPARE(result.meta.size(), 3);
         QCOMPARE(result.meta[0].lineKind, LineKind::CommandRow);
-        QCOMPARE(result.meta[1].lineKind, LineKind::CommandRow2);
+        QCOMPARE(result.meta[1].lineKind, LineKind::Blank);
+        QCOMPARE(result.meta[2].lineKind, LineKind::CommandRow2);
     }
 
     void testCompose_viewRootId_singleRoot() {
@@ -881,23 +882,23 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + 1 Vec4 line + footer = 4
-        QCOMPARE(result.meta.size(), 4);
+        // CommandRow + Blank + CommandRow2 + 1 Vec4 line + footer = 5
+        QCOMPARE(result.meta.size(), 5);
 
-        // The Vec4 line (index 2) is a single field line, not continuation
-        QCOMPARE(result.meta[2].lineKind, LineKind::Field);
-        QCOMPARE(result.meta[2].nodeKind, NodeKind::Vec4);
-        QVERIFY(!result.meta[2].isContinuation);
+        // The Vec4 line (index 3) is a single field line, not continuation
+        QCOMPARE(result.meta[3].lineKind, LineKind::Field);
+        QCOMPARE(result.meta[3].nodeKind, NodeKind::Vec4);
+        QVERIFY(!result.meta[3].isContinuation);
 
         // Copy text (equivalent to editor's "Copy All as Text")
         QString text = result.text;
-        // NullProvider reads 0 for all floats, so values are "0, 0, 0, 0"
-        QVERIFY(text.contains("0, 0, 0, 0"));
+        // NullProvider reads 0 for all floats, values are "0.f, 0.f, 0.f, 0.f"
+        QVERIFY(text.contains("0.f, 0.f, 0.f, 0.f"));
         // Confirm type, name, and values all on the same line
         QStringList lines = text.split('\n');
-        QVERIFY(lines[2].contains("Vec4"));
-        QVERIFY(lines[2].contains("position"));
-        QVERIFY(lines[2].contains("0, 0, 0, 0"));
+        QVERIFY(lines[3].contains("vec4"));
+        QVERIFY(lines[3].contains("position"));
+        QVERIFY(lines[3].contains("0.f, 0.f, 0.f, 0.f"));
     }
 };
 

@@ -49,8 +49,8 @@ public:
     void setEditorFont(const QString& fontName);
     static void setGlobalFontName(const QString& fontName);
 
-    // Custom type names (struct types from the tree) shown in type picker
-    void setCustomTypeNames(const QStringList& names) { m_customTypeNames = names; }
+    // Custom type names (struct types from the tree) shown in type picker + lexer GlobalClass coloring
+    void setCustomTypeNames(const QStringList& names);
 
     // Saved sources for quick-switch in source picker
     void setSavedSources(const QVector<SavedSourceDisplay>& sources) { m_savedSourceDisplay = sources; }

@@ -387,6 +387,14 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
             });
     });
 
+    // Auto-focus on first root struct (don't show all roots)
+    for (const auto& n : doc->tree.nodes) {
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+            ctrl->setViewRootId(n.id);
+            break;
+        }
+    }
+
     ctrl->refresh();
     rebuildWorkspaceModel();
     return sub;
@@ -408,7 +416,7 @@ void MainWindow::selfTest() {
         Node ball;
         ball.kind = NodeKind::Struct;
         ball.name = "aBall";
-        ball.structTypeName = "Ball";
+        ball.structTypeName = "ball";
         ball.parentId = 0;
         ball.offset = 0;
         int bi = doc->tree.addNode(ball);
@@ -420,21 +428,39 @@ void MainWindow::selfTest() {
         { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity";   n.parentId = ballId; n.offset = 32; doc->tree.addNode(n); }
         { Node n; n.kind = NodeKind::Hex32;  n.name = "field_2C";   n.parentId = ballId; n.offset = 44; doc->tree.addNode(n); }
         { Node n; n.kind = NodeKind::Float;  n.name = "speed";      n.parentId = ballId; n.offset = 48; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_34";   n.parentId = ballId; n.offset = 52; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 56; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 52; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "radius";     n.parentId = ballId; n.offset = 56; doc->tree.addNode(n); }
         { Node n; n.kind = NodeKind::Hex32;  n.name = "field_3C";   n.parentId = ballId; n.offset = 60; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "radius";     n.parentId = ballId; n.offset = 64; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_44";   n.parentId = ballId; n.offset = 68; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Double; n.name = "mass";       n.parentId = ballId; n.offset = 72; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_50";   n.parentId = ballId; n.offset = 80; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";     n.parentId = ballId; n.offset = 88; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_59";   n.parentId = ballId; n.offset = 89; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_5A";   n.parentId = ballId; n.offset = 90; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "bounceCount"; n.parentId = ballId; n.offset = 92; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_60";   n.parentId = ballId; n.offset = 96; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_68";   n.parentId = ballId; n.offset = 100; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_70";   n.parentId = ballId; n.offset = 108; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_78";   n.parentId = ballId; n.offset = 116; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "mass";       n.parentId = ballId; n.offset = 64; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_44";   n.parentId = ballId; n.offset = 68; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";     n.parentId = ballId; n.offset = 76; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_4D";   n.parentId = ballId; n.offset = 77; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_4E";   n.parentId = ballId; n.offset = 78; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 80; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_54";   n.parentId = ballId; n.offset = 84; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_58";   n.parentId = ballId; n.offset = 88; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_60";   n.parentId = ballId; n.offset = 96; doc->tree.addNode(n); }
+
+        // Physics struct (defined at root level)
+        Node phys;
+        phys.kind = NodeKind::Struct;
+        phys.name = "aPhysics";
+        phys.structTypeName = "Physics";
+        phys.parentId = 0;
+        phys.offset = 0;
+        int pi = doc->tree.addNode(phys);
+        uint64_t physId = doc->tree.nodes[pi].id;
+
+        { Node n; n.kind = NodeKind::Hex64; n.name = "field_00"; n.parentId = physId; n.offset = 0;  doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64; n.name = "field_08"; n.parentId = physId; n.offset = 8;  doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64; n.name = "field_10"; n.parentId = physId; n.offset = 16; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64; n.name = "field_18"; n.parentId = physId; n.offset = 24; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64; n.name = "field_20"; n.parentId = physId; n.offset = 32; doc->tree.addNode(n); }
+
+        // Pointer to Physics in ball struct
+        { Node n; n.kind = NodeKind::Pointer64; n.name = "physics"; n.parentId = ballId; n.offset = 104; n.refId = physId; n.collapsed = true; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_70";   n.parentId = ballId; n.offset = 112; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_78";   n.parentId = ballId; n.offset = 120; doc->tree.addNode(n); }
 
         doc->save(demoPath);
         doc->load(demoPath);

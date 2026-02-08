@@ -55,10 +55,10 @@ struct KindMeta {
 
 inline constexpr KindMeta kKindMeta[] = {
     // kind                name         typeName      sz  ln  al  flags
-    {NodeKind::Hex8,      "Hex8",      "Hex8",        1,  1,  1, KF_HexPreview},
-    {NodeKind::Hex16,     "Hex16",     "Hex16",       2,  1,  2, KF_HexPreview},
-    {NodeKind::Hex32,     "Hex32",     "Hex32",       4,  1,  4, KF_HexPreview},
-    {NodeKind::Hex64,     "Hex64",     "Hex64",       8,  1,  8, KF_HexPreview},
+    {NodeKind::Hex8,      "Hex8",      "hex8",        1,  1,  1, KF_HexPreview},
+    {NodeKind::Hex16,     "Hex16",     "hex16",       2,  1,  2, KF_HexPreview},
+    {NodeKind::Hex32,     "Hex32",     "hex32",       4,  1,  4, KF_HexPreview},
+    {NodeKind::Hex64,     "Hex64",     "hex64",       8,  1,  8, KF_HexPreview},
     {NodeKind::Int8,      "Int8",      "int8_t",      1,  1,  1, KF_None},
     {NodeKind::Int16,     "Int16",     "int16_t",     2,  1,  2, KF_None},
     {NodeKind::Int32,     "Int32",     "int32_t",     4,  1,  4, KF_None},
@@ -72,10 +72,10 @@ inline constexpr KindMeta kKindMeta[] = {
     {NodeKind::Bool,      "Bool",      "bool",        1,  1,  1, KF_None},
     {NodeKind::Pointer32, "Pointer32", "ptr32",       4,  1,  4, KF_None},
     {NodeKind::Pointer64, "Pointer64", "ptr64",       8,  1,  8, KF_None},
-    {NodeKind::Vec2,      "Vec2",      "Vec2",        8,  1,  4, KF_Vector},
-    {NodeKind::Vec3,      "Vec3",      "Vec3",       12,  1,  4, KF_Vector},
-    {NodeKind::Vec4,      "Vec4",      "Vec4",       16,  1,  4, KF_Vector},
-    {NodeKind::Mat4x4,    "Mat4x4",    "Mat4x4",     64,  4,  4, KF_None},
+    {NodeKind::Vec2,      "Vec2",      "vec2",        8,  1,  4, KF_Vector},
+    {NodeKind::Vec3,      "Vec3",      "vec3",       12,  1,  4, KF_Vector},
+    {NodeKind::Vec4,      "Vec4",      "vec4",       16,  1,  4, KF_Vector},
+    {NodeKind::Mat4x4,    "Mat4x4",    "mat4x4",     64,  4,  4, KF_None},
     {NodeKind::UTF8,      "UTF8",      "char[]",      1,  1,  1, KF_String},
     {NodeKind::UTF16,     "UTF16",     "wchar_t[]",   2,  1,  2, KF_String},
     {NodeKind::Padding,   "Padding",   "pad",         1,  1,  1, KF_HexPreview},
@@ -124,6 +124,9 @@ inline constexpr bool isHexPreview(NodeKind k) {
 }
 inline constexpr bool isHexNode(NodeKind k) {
     return k >= NodeKind::Hex8 && k <= NodeKind::Hex64;
+}
+inline constexpr bool isVectorKind(NodeKind k) {
+    return k == NodeKind::Vec2 || k == NodeKind::Vec3 || k == NodeKind::Vec4;
 }
 
 inline QStringList allTypeNamesForUI(bool stripBrackets = false) {
@@ -391,15 +394,17 @@ struct NodeTree {
 
 enum class LineKind : uint8_t {
     CommandRow,   // line 0: source + address
-    CommandRow2,  // line 1: root class type + name
+    Blank,        // line 1: dotted separator
+    CommandRow2,  // line 2: root class type + name
     Header, Field, Continuation, Footer, ArrayElementSeparator
 };
 
 static constexpr uint64_t kCommandRowId   = UINT64_MAX;
 static constexpr uint64_t kCommandRow2Id  = UINT64_MAX - 1;
 static constexpr int      kCommandRowLine = 0;
-static constexpr int      kCommandRow2Line = 1;
-static constexpr int      kFirstDataLine  = 2;
+static constexpr int      kBlankLine       = 1;
+static constexpr int      kCommandRow2Line = 2;
+static constexpr int      kFirstDataLine  = 3;
 static constexpr uint64_t kFooterIdBit    = 0x8000000000000000ULL;
 
 struct LineMeta {
@@ -430,7 +435,7 @@ struct LineMeta {
 };
 
 inline bool isSyntheticLine(const LineMeta& lm) {
-    return lm.lineKind == LineKind::CommandRow || lm.lineKind == LineKind::CommandRow2;
+    return lm.lineKind == LineKind::CommandRow || lm.lineKind == LineKind::Blank || lm.lineKind == LineKind::CommandRow2;
 }
 
 // ── Layout Info ──
@@ -568,22 +573,26 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength, int typeW =
 }
 
 // ── CommandRow spans ──
-// Line format: "   File 'name' Address: 0x140000000"
+// Line format: "source▾ › 0x140000000"
 
 inline ColumnSpan commandRowSrcSpan(const QString& lineText) {
-    int idx = lineText.indexOf(QStringLiteral(" Address: "));
+    int idx = lineText.indexOf(QStringLiteral(" \u203A"));
     if (idx < 0) return {};
     int start = 0;
     while (start < idx && !lineText[start].isLetterOrNumber()
-           && lineText[start] != '<') start++;
+           && lineText[start] != '<' && lineText[start] != '\'') start++;
     if (start >= idx) return {};
-    return {start, idx, true};
+    // Exclude trailing ▾ from the editable span
+    int end = idx;
+    while (end > start && lineText[end - 1] == QChar(0x25BE)) end--;
+    if (end <= start) return {};
+    return {start, end, true};
 }
 
 inline ColumnSpan commandRowAddrSpan(const QString& lineText) {
-    int tag = lineText.indexOf(QStringLiteral(" Address: "));
+    int tag = lineText.indexOf(QStringLiteral(" \u203A"));
     if (tag < 0) return {};
-    int start = tag + 10;  // after " Address: "
+    int start = tag + 3;  // after " › "
     int end = start;
     while (end < lineText.size() && !lineText[end].isSpace()) end++;
     if (end <= start) return {};
@@ -591,13 +600,14 @@ inline ColumnSpan commandRowAddrSpan(const QString& lineText) {
 }
 
 // ── CommandRow2 spans ──
-// Line format: "struct ClassName"
+// Line format: "struct▾ ClassName {"
 
 inline ColumnSpan commandRow2TypeSpan(const QString& lineText) {
     int start = 0;
     while (start < lineText.size() && lineText[start].isSpace()) start++;
     if (start >= lineText.size()) return {};
-    int end = lineText.indexOf(' ', start);
+    int end = start;
+    while (end < lineText.size() && lineText[end] != QChar(' ') && lineText[end] != QChar(0x25BE)) end++;
     if (end <= start) return {start, (int)lineText.size(), true};
     return {start, end, true};
 }
@@ -642,27 +652,20 @@ inline ColumnSpan arrayElemCountSpanFor(const LineMeta& lm, const QString& lineT
 }
 
 // ── Pointer kind/target spans (within type column of pointer fields) ──
-// Line format: "   ptr64<void>    name  -> 0x..."
-// pointerKindSpan covers "ptr64" or "ptr32", pointerTargetSpan covers the target name inside <>
+// Line format: "   void*          name  -> 0x..."
+// pointerTargetSpan covers the target name before '*'
 
-inline ColumnSpan pointerKindSpanFor(const LineMeta& lm, const QString& lineText) {
-    if ((lm.lineKind != LineKind::Field && lm.lineKind != LineKind::Header) || lm.isContinuation) return {};
-    if (lm.nodeKind != NodeKind::Pointer32 && lm.nodeKind != NodeKind::Pointer64) return {};
-    int ind = kFoldCol + lm.depth * 3;
-    // Find '<' in the type portion
-    int lt = lineText.indexOf('<', ind);
-    if (lt <= ind) return {};
-    return {ind, lt, true};
+inline ColumnSpan pointerKindSpanFor(const LineMeta& /*lm*/, const QString& /*lineText*/) {
+    return {};  // No separate kind span in "Type*" format
 }
 
 inline ColumnSpan pointerTargetSpanFor(const LineMeta& lm, const QString& lineText) {
     if ((lm.lineKind != LineKind::Field && lm.lineKind != LineKind::Header) || lm.isContinuation) return {};
     if (lm.nodeKind != NodeKind::Pointer32 && lm.nodeKind != NodeKind::Pointer64) return {};
     int ind = kFoldCol + lm.depth * 3;
-    int lt = lineText.indexOf('<', ind);
-    int gt = lineText.indexOf('>', lt);
-    if (lt < 0 || gt < 0 || gt <= lt + 1) return {};
-    return {lt + 1, gt, true};
+    int star = lineText.indexOf('*', ind);
+    if (star <= ind) return {};
+    return {ind, star, true};
 }
 
 // ── Array navigation spans ──

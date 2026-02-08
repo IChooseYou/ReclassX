@@ -13,15 +13,15 @@ using namespace rcx;
 static QString buildSourceLabel(const Provider& prov) {
     QString provName = prov.name();
     if (provName.isEmpty())
-        return QStringLiteral("<Select Source>");
-    return QStringLiteral("%1 '%2'").arg(prov.kind(), provName);
+        return QStringLiteral("source\u25BE");
+    return QStringLiteral("'%1'\u25BE").arg(provName);
 }
 
 static QString buildCommandRow(const Provider& prov, uint64_t baseAddress) {
     QString src = buildSourceLabel(prov);
     QString addr = QStringLiteral("0x") +
         QString::number(baseAddress, 16).toUpper();
-    return QStringLiteral("   %1 Address: %2").arg(src, addr);
+    return QStringLiteral("   %1 \u203A %2").arg(src, addr);
 }
 
 // -- Replicate commandRowSrcSpan for testing
@@ -32,13 +32,17 @@ struct TestColumnSpan {
 };
 
 static TestColumnSpan commandRowSrcSpan(const QString& lineText) {
-    int idx = lineText.indexOf(QStringLiteral(" Address: "));
+    int idx = lineText.indexOf(QStringLiteral(" \u203A"));
     if (idx < 0) return {};
     int start = 0;
     while (start < idx && !lineText[start].isLetterOrNumber()
-           && lineText[start] != '<') start++;
+           && lineText[start] != '<' && lineText[start] != '\'') start++;
     if (start >= idx) return {};
-    return {start, idx, true};
+    // Exclude trailing ▾ from the editable span
+    int end = idx;
+    while (end > start && lineText[end - 1] == QChar(0x25BE)) end--;
+    if (end <= start) return {};
+    return {start, end, true};
 }
 
 class TestCommandRow : public QObject {
@@ -52,18 +56,18 @@ private slots:
 
     void label_nullProvider_showsSelectSource() {
         NullProvider p;
-        QCOMPARE(buildSourceLabel(p), QStringLiteral("<Select Source>"));
+        QCOMPARE(buildSourceLabel(p), QStringLiteral("source\u25BE"));
     }
 
     void label_bufferNoName_showsSelectSource() {
-        // BufferProvider with empty name also triggers <Select Source>
+        // BufferProvider with empty name also triggers source▾
         BufferProvider p(QByteArray(4, '\0'));
-        QCOMPARE(buildSourceLabel(p), QStringLiteral("<Select Source>"));
+        QCOMPARE(buildSourceLabel(p), QStringLiteral("source\u25BE"));
     }
 
     void label_bufferWithName_showsFileAndName() {
         BufferProvider p(QByteArray(4, '\0'), "dump.bin");
-        QCOMPARE(buildSourceLabel(p), QStringLiteral("File 'dump.bin'"));
+        QCOMPARE(buildSourceLabel(p), QStringLiteral("'dump.bin'\u25BE"));
     }
 
     // ---------------------------------------------------------------
@@ -73,13 +77,13 @@ private slots:
     void row_nullProvider() {
         NullProvider p;
         QString row = buildCommandRow(p, 0);
-        QCOMPARE(row, QStringLiteral("   <Select Source> Address: 0x0"));
+        QCOMPARE(row, QStringLiteral("   source\u25BE \u203A 0x0"));
     }
 
     void row_fileProvider() {
         BufferProvider p(QByteArray(4, '\0'), "test.bin");
         QString row = buildCommandRow(p, 0x140000000ULL);
-        QCOMPARE(row, QStringLiteral("   File 'test.bin' Address: 0x140000000"));
+        QCOMPARE(row, QStringLiteral("   'test.bin'\u25BE \u203A 0x140000000"));
     }
 
     // ---------------------------------------------------------------
@@ -91,7 +95,7 @@ private slots:
         auto span = commandRowSrcSpan(row);
         QVERIFY(span.valid);
         QString extracted = row.mid(span.start, span.end - span.start);
-        QCOMPARE(extracted, QStringLiteral("<Select Source>"));
+        QCOMPARE(extracted, QStringLiteral("source"));
     }
 
     void span_fileProvider() {
@@ -100,17 +104,17 @@ private slots:
         auto span = commandRowSrcSpan(row);
         QVERIFY(span.valid);
         QString extracted = row.mid(span.start, span.end - span.start);
-        QCOMPARE(extracted, QStringLiteral("File 'dump.bin'"));
+        QCOMPARE(extracted, QStringLiteral("'dump.bin'"));
     }
 
     void span_processProvider_simulated() {
         // Simulate a process provider without needing Windows APIs
         // by building the string directly
-        QString row = QStringLiteral("   Process 'notepad.exe' Address: 0x7FF600000000");
+        QString row = QStringLiteral("   'notepad.exe'\u25BE \u203A 0x7FF600000000");
         auto span = commandRowSrcSpan(row);
         QVERIFY(span.valid);
         QString extracted = row.mid(span.start, span.end - span.start);
-        QCOMPARE(extracted, QStringLiteral("Process 'notepad.exe'"));
+        QCOMPARE(extracted, QStringLiteral("'notepad.exe'"));
     }
 
     // ---------------------------------------------------------------
@@ -120,11 +124,11 @@ private slots:
     void switching_nullToFileToProcess() {
         // Start with NullProvider
         std::unique_ptr<Provider> prov = std::make_unique<NullProvider>();
-        QCOMPARE(buildSourceLabel(*prov), QStringLiteral("<Select Source>"));
+        QCOMPARE(buildSourceLabel(*prov), QStringLiteral("source\u25BE"));
 
         // User loads a file
         prov = std::make_unique<BufferProvider>(QByteArray(64, '\0'), "game.exe");
-        QCOMPARE(buildSourceLabel(*prov), QStringLiteral("File 'game.exe'"));
+        QCOMPARE(buildSourceLabel(*prov), QStringLiteral("'game.exe'\u25BE"));
 
         // User switches to a "process" -- simulate with a named BufferProvider
         // (ProcessProvider needs Windows, but the label logic is the same)

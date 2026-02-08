@@ -376,7 +376,7 @@ private slots:
 
         // Set CommandRow text with an ADDR value (simulates controller.updateCommandRow)
         m_editor->setCommandRowText(
-            QStringLiteral("   File Address: 0xD87B5E5000"));
+            QStringLiteral("source\u25BE \u203A 0xD87B5E5000"));
 
         // BaseAddress should be ALLOWED on CommandRow (ADDR field)
         bool ok = m_editor->beginInlineEdit(EditTarget::BaseAddress, 0);
@@ -394,14 +394,14 @@ private slots:
 
     // ── Test: inline edit lifecycle (begin → commit → re-edit) ──
     void testInlineEditReEntry() {
-        // Move cursor to line 2 (first field; line 0=CommandRow, 1=CommandRow2, root header suppressed)
-        m_editor->scintilla()->setCursorPosition(2, 0);
+        // Move cursor to line 3 (first field; 0=CommandRow, 1=Blank, 2=CommandRow2, root header suppressed)
+        m_editor->scintilla()->setCursorPosition(kFirstDataLine, 0);
 
         // Should not be editing
         QVERIFY(!m_editor->isEditing());
 
         // Begin edit on Name column
-        bool ok = m_editor->beginInlineEdit(EditTarget::Name, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Name, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -413,7 +413,7 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Should be able to edit again
-        ok = m_editor->beginInlineEdit(EditTarget::Name, 2);
+        ok = m_editor->beginInlineEdit(EditTarget::Name, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -425,10 +425,10 @@ private slots:
     // ── Test: commit inline edit then re-edit same line ──
     void testCommitThenReEdit() {
         m_editor->applyDocument(m_result);
-        m_editor->scintilla()->setCursorPosition(2, 0);
+        m_editor->scintilla()->setCursorPosition(kFirstDataLine, 0);
 
         // Begin value edit
-        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -445,7 +445,7 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Must be able to edit the same line again
-        ok = m_editor->beginInlineEdit(EditTarget::Value, 2);
+        ok = m_editor->beginInlineEdit(EditTarget::Value, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -456,7 +456,7 @@ private slots:
     void testMouseClickCommitsEdit() {
         m_editor->applyDocument(m_result);
 
-        bool ok = m_editor->beginInlineEdit(EditTarget::Name, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Name, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -478,7 +478,7 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Begin type edit on a field line
-        bool ok = m_editor->beginInlineEdit(EditTarget::Type, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Type, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -598,7 +598,7 @@ private slots:
     void testTypeAutocompleteTypingAndCommit() {
         m_editor->applyDocument(m_result);
 
-        bool ok = m_editor->beginInlineEdit(EditTarget::Type, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Type, kFirstDataLine);
         QVERIFY(ok);
 
         // Autocomplete is deferred via QTimer::singleShot(0) — poll until active
@@ -635,7 +635,7 @@ private slots:
     void testTypeEditClickAwayNoChange() {
         m_editor->applyDocument(m_result);
 
-        bool ok = m_editor->beginInlineEdit(EditTarget::Type, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Type, kFirstDataLine);
         QVERIFY(ok);
 
         // Process deferred autocomplete
@@ -652,7 +652,7 @@ private slots:
         QCOMPARE(commitSpy.count(), 1);
 
         // The committed text should be the original typeName (no change)
-        // First field at line 2 is InheritedAddressSpace (UInt8 → "uint8_t")
+        // First field at kFirstDataLine is InheritedAddressSpace (UInt8 → "uint8_t")
         QList<QVariant> args = commitSpy.first();
         QString committedText = args.at(3).toString();
         QVERIFY2(committedText == "uint8_t",
@@ -665,8 +665,8 @@ private slots:
     void testColumnSpanHitTest() {
         m_editor->applyDocument(m_result);
 
-        // Line 2 is a field line (UInt8), verify spans are valid (line 0=CommandRow, 1=CommandRow2)
-        const LineMeta* lm = m_editor->metaForLine(2);
+        // kFirstDataLine is a field line (UInt8), verify spans are valid
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Field);
 
@@ -683,7 +683,7 @@ private slots:
         // Value span should be valid for field lines
         QString lineText;
         int len = (int)m_editor->scintilla()->SendScintilla(
-            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)2);
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)kFirstDataLine);
         QVERIFY(len > 0);
         ColumnSpan vs = RcxEditor::valueSpan(*lm, len);
         QVERIFY(vs.valid);
@@ -712,13 +712,13 @@ private slots:
     void testSelectedNodeIndices() {
         m_editor->applyDocument(m_result);
 
-        // Put cursor on first field line (line 2; 0=CommandRow, 1=CommandRow2, root header suppressed)
-        m_editor->scintilla()->setCursorPosition(2, 0);
+        // Put cursor on first field line (kFirstDataLine; 0=CommandRow, 1=Blank, 2=CommandRow2)
+        m_editor->scintilla()->setCursorPosition(kFirstDataLine, 0);
         QSet<int> sel = m_editor->selectedNodeIndices();
         QCOMPARE(sel.size(), 1);
 
         // The node index should match the first field
-        const LineMeta* lm = m_editor->metaForLine(2);
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
         QVERIFY(sel.contains(lm->nodeIdx));
     }
@@ -736,8 +736,8 @@ private slots:
         QVERIFY2(!result.text.contains("// base:"),
                  "Composed text should not contain '// base:' (consolidated into cmd bar)");
 
-        // Line 2 should be the first field (root header suppressed)
-        const LineMeta* lm = m_editor->metaForLine(2);
+        // kFirstDataLine should be the first field (root header suppressed)
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Field);
 
@@ -750,7 +750,7 @@ private slots:
 
         // Set CommandRow text with ADDR value (simulates controller)
         m_editor->setCommandRowText(
-            QStringLiteral("   File Address: 0xD87B5E5000"));
+            QStringLiteral("source\u25BE \u203A 0xD87B5E5000"));
 
         // Line 0 is CommandRow
         const LineMeta* lm = m_editor->metaForLine(0);
@@ -852,14 +852,14 @@ private slots:
     void testValueEditCommitUpdatesSignal() {
         m_editor->applyDocument(m_result);
 
-        // Line 2 = first UInt8 field (InheritedAddressSpace, root header suppressed)
-        const LineMeta* lm = m_editor->metaForLine(2);
+        // kFirstDataLine = first UInt8 field (InheritedAddressSpace, root header suppressed)
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Field);
         QVERIFY(lm->nodeKind != NodeKind::Padding);
 
         // Begin value edit
-        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 2);
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, kFirstDataLine);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
 
@@ -902,7 +902,7 @@ private slots:
 
         // Set CommandRow text with ADDR value (simulates controller)
         m_editor->setCommandRowText(
-            QStringLiteral("   File Address: 0xD87B5E5000"));
+            QStringLiteral("source\u25BE \u203A 0xD87B5E5000"));
 
         // Begin base address edit on line 0 (CommandRow ADDR field)
         bool ok = m_editor->beginInlineEdit(EditTarget::BaseAddress, 0);
@@ -919,7 +919,7 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Click on a field line at the indent area (col 0 — not over editable text)
-        QPoint clickPos = colToViewport(m_editor->scintilla(), 2, 0);
+        QPoint clickPos = colToViewport(m_editor->scintilla(), kFirstDataLine, 0);
         sendLeftClick(m_editor->scintilla()->viewport(), clickPos);
         QApplication::processEvents();
 
@@ -932,8 +932,8 @@ private slots:
     void testCursorShapeOverText() {
         m_editor->applyDocument(m_result);
 
-        // Line 2 is a field (UInt8 InheritedAddressSpace)
-        const LineMeta* lm = m_editor->metaForLine(2);
+        // kFirstDataLine is a field (UInt8 InheritedAddressSpace)
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
 
         // Get the name span (padded to kColName width)
@@ -941,14 +941,14 @@ private slots:
         QVERIFY(ns.valid);
 
         // Move mouse to the start of the name span (should be over text)
-        QPoint textPos = colToViewport(m_editor->scintilla(), 2, ns.start + 1);
+        QPoint textPos = colToViewport(m_editor->scintilla(), kFirstDataLine, ns.start + 1);
         sendMouseMove(m_editor->scintilla()->viewport(), textPos);
         QApplication::processEvents();
         QCOMPARE(viewportCursor(m_editor), Qt::IBeamCursor);
 
         // Move mouse to far padding area (past end of text, within padded span)
         // The padded span ends at ns.end but the trimmed text is shorter
-        QPoint padPos = colToViewport(m_editor->scintilla(), 2, ns.end - 1);
+        QPoint padPos = colToViewport(m_editor->scintilla(), kFirstDataLine, ns.end - 1);
         sendMouseMove(m_editor->scintilla()->viewport(), padPos);
         QApplication::processEvents();
         // Should be Arrow (padding whitespace, not actual text)
@@ -959,7 +959,7 @@ private slots:
     void testCursorShapeOverType() {
         m_editor->applyDocument(m_result);
 
-        const LineMeta* lm = m_editor->metaForLine(2);
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
 
         // Type span starts after the fold column + indent
@@ -967,7 +967,7 @@ private slots:
         QVERIFY(ts.valid);
 
         // Move to start of type text (e.g. "uint8_t")
-        QPoint typePos = colToViewport(m_editor->scintilla(), 2, ts.start + 1);
+        QPoint typePos = colToViewport(m_editor->scintilla(), kFirstDataLine, ts.start + 1);
         sendMouseMove(m_editor->scintilla()->viewport(), typePos);
         QApplication::processEvents();
         QCOMPARE(viewportCursor(m_editor), Qt::PointingHandCursor);
@@ -1013,18 +1013,18 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Click on a field to select the node
-        const LineMeta* lm = m_editor->metaForLine(2);
+        const LineMeta* lm = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm);
         ColumnSpan ns = RcxEditor::nameSpan(*lm, lm->effectiveTypeW, lm->effectiveNameW);
         QVERIFY(ns.valid);
 
         // Click in the name area (selects the node)
-        QPoint clickPos = colToViewport(m_editor->scintilla(), 2, ns.start + 1);
+        QPoint clickPos = colToViewport(m_editor->scintilla(), kFirstDataLine, ns.start + 1);
         sendLeftClick(m_editor->scintilla()->viewport(), clickPos);
         QApplication::processEvents();
 
         // Now move mouse to col 0 (indent area — non-editable)
-        QPoint emptyPos = colToViewport(m_editor->scintilla(), 2, 0);
+        QPoint emptyPos = colToViewport(m_editor->scintilla(), kFirstDataLine, 0);
         sendMouseMove(m_editor->scintilla()->viewport(), emptyPos);
         QApplication::processEvents();
 
@@ -1033,26 +1033,26 @@ private slots:
         QVERIFY(!m_editor->isEditing());
     }
 
-    // ── Test: CommandRow2 exists at line 1 ──
+    // ── Test: CommandRow2 exists at kCommandRow2Line ──
     void testCommandRow2Exists() {
         m_editor->applyDocument(m_result);
 
-        // Line 1 should be CommandRow2
-        const LineMeta* lm = m_editor->metaForLine(1);
+        // kCommandRow2Line should be CommandRow2
+        const LineMeta* lm = m_editor->metaForLine(kCommandRow2Line);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::CommandRow2);
         QCOMPARE(lm->nodeId, kCommandRow2Id);
         QCOMPARE(lm->nodeIdx, -1);
 
         // Type/Name/Value should be rejected on CommandRow2
-        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Type, 1));
-        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Name, 1));
-        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Value, 1));
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Type, kCommandRow2Line));
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Name, kCommandRow2Line));
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Value, kCommandRow2Line));
         QVERIFY(!m_editor->isEditing());
 
         // RootClassName should be allowed on CommandRow2
-        m_editor->setCommandRow2Text(QStringLiteral("struct _PEB64"));
-        bool ok = m_editor->beginInlineEdit(EditTarget::RootClassName, 1);
+        m_editor->setCommandRow2Text(QStringLiteral("struct\u25BE _PEB64"));
+        bool ok = m_editor->beginInlineEdit(EditTarget::RootClassName, kCommandRow2Line);
         QVERIFY2(ok, "RootClassName edit should be allowed on CommandRow2");
         QVERIFY(m_editor->isEditing());
         m_editor->cancelInlineEdit();
@@ -1063,15 +1063,15 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Set CommandRow2 without alignas
-        m_editor->setCommandRow2Text(QStringLiteral("struct _PEB64"));
+        m_editor->setCommandRow2Text(QStringLiteral("struct\u25BE _PEB64"));
 
-        // Line 1 is CommandRow2
-        const LineMeta* lm = m_editor->metaForLine(1);
+        // kCommandRow2Line is CommandRow2
+        const LineMeta* lm = m_editor->metaForLine(kCommandRow2Line);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::CommandRow2);
 
         // RootClassName should work
-        QVERIFY(m_editor->beginInlineEdit(EditTarget::RootClassName, 1));
+        QVERIFY(m_editor->beginInlineEdit(EditTarget::RootClassName, kCommandRow2Line));
         QVERIFY(m_editor->isEditing());
         m_editor->cancelInlineEdit();
 
@@ -1083,15 +1083,15 @@ private slots:
         m_editor->applyDocument(m_result);
 
         // Root struct header is completely suppressed from output.
-        // Line 0 = CommandRow, Line 1 = CommandRow2, Line 2 = first field.
-        const LineMeta* lm2 = m_editor->metaForLine(2);
+        // Line 0 = CommandRow, Line 1 = Blank, Line 2 = CommandRow2, Line 3 = first field.
+        const LineMeta* lm2 = m_editor->metaForLine(kFirstDataLine);
         QVERIFY(lm2);
         QCOMPARE(lm2->lineKind, LineKind::Field);
 
-        // Verify no root header exists anywhere in the output
+        // Verify no root header line exists in the output (footer may have isRootHeader for flush-left)
         bool foundRootHeader = false;
         for (int i = 0; i < m_result.meta.size(); i++) {
-            if (m_result.meta[i].isRootHeader) {
+            if (m_result.meta[i].isRootHeader && m_result.meta[i].lineKind == LineKind::Header) {
                 foundRootHeader = true;
                 break;
             }
