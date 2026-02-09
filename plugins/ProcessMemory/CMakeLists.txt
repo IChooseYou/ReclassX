@@ -26,8 +26,18 @@ add_library(ProcessMemoryPlugin SHARED ${PLUGIN_SOURCES})
 # Link Qt
 target_link_libraries(ProcessMemoryPlugin PRIVATE Qt6::Widgets)
 
+# Platform-specific linking
+if(WIN32)
+    target_link_libraries(ProcessMemoryPlugin PRIVATE psapi shell32)
+endif()
+
+# On Linux, hide all symbols by default so only RCX_PLUGIN_EXPORT-marked ones are exported
+if(UNIX AND NOT APPLE)
+    target_compile_options(ProcessMemoryPlugin PRIVATE -fvisibility=hidden)
+endif()
+
 # Include directories
-target_include_directories(ProcessMemoryPlugin PRIVATE 
+target_include_directories(ProcessMemoryPlugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src
 )
 

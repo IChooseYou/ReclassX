@@ -4,14 +4,20 @@
 #include <memory>
 #include <string>
 
+#ifdef _WIN32
+    #define RCX_PLUGIN_EXPORT __declspec(dllexport)
+#else
+    #define RCX_PLUGIN_EXPORT __attribute__((visibility("default")))
+#endif
+
 // Forward declaration
 namespace rcx { class Provider; }
 
 /**
  * Plugin interface for ReclassX
- * 
- * Plugins are loaded from the "Plugins" folder as DLLs.
- * Each plugin must export a C function: extern "C" __declspec(dllexport) IPlugin* CreatePlugin();
+ *
+ * Plugins are loaded from the "Plugins" folder as shared libraries.
+ * Each plugin must export a C function: extern "C" RCX_PLUGIN_EXPORT IPlugin* CreatePlugin();
  */
 class IPlugin {
 public:

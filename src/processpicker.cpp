@@ -11,6 +11,11 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <shellapi.h>
+#elif defined(__linux__)
+#include <QDir>
+#include <QStyle>
+#include <QApplication>
+#include <unistd.h>
 #endif
 
 ProcessPicker::ProcessPicker(QWidget *parent)
@@ -155,6 +160,45 @@ void ProcessPicker::enumerateProcesses()
     }
     
     CloseHandle(snapshot);
+#elif defined(__linux__)
+    QDir procDir("/proc");
+    QStringList entries = procDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    QIcon defaultIcon = qApp->style()->standardIcon(QStyle::SP_ComputerIcon);
+
+    for (const QString& entry : entries) {
+        bool ok = false;
+        uint32_t pid = entry.toUInt(&ok);
+        if (!ok || pid == 0) continue;
+
+        // Read process name from /proc/<pid>/comm
+        QString commPath = QStringLiteral("/proc/%1/comm").arg(pid);
+        QFile commFile(commPath);
+        QString procName;
+        if (commFile.open(QIODevice::ReadOnly)) {
+            procName = QString::fromUtf8(commFile.readAll()).trimmed();
+            commFile.close();
+        }
+        if (procName.isEmpty()) continue;
+
+        // Read exe path from /proc/<pid>/exe symlink
+        QString exePath = QStringLiteral("/proc/%1/exe").arg(pid);
+        QFileInfo exeInfo(exePath);
+        QString resolvedPath;
+        if (exeInfo.exists())
+            resolvedPath = exeInfo.symLinkTarget();
+
+        // Skip if we can't read the process memory
+        QString memPath = QStringLiteral("/proc/%1/mem").arg(pid);
+        if (::access(memPath.toUtf8().constData(), R_OK) != 0)
+            continue;
+
+        ProcessInfo info;
+        info.pid = pid;
+        info.name = procName;
+        info.path = resolvedPath;
+        info.icon = defaultIcon;
+        processes.append(info);
+    }
 #else
     // Platform not supported
     QMessageBox::warning(this, "Error", "Process enumeration not supported on this platform.");

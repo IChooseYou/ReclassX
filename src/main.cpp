@@ -1188,7 +1188,7 @@ int main(int argc, char* argv[]) {
         QTimer::singleShot(1000, [&window, out]() {
             QDir().mkpath(QFileInfo(out).absolutePath());
             window.grab().save(out);
-            ::_exit(0);  // immediate exit — no need for clean shutdown in screenshot mode
+            ::_Exit(0);  // immediate exit — no need for clean shutdown in screenshot mode
         });
     }
 
