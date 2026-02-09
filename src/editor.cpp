@@ -650,6 +650,11 @@ void RcxEditor::applyCommandRowPills() {
     clearIndicatorLine(IND_HEX_DIM, line);
     clearIndicatorLine(IND_CLASS_NAME, line);
 
+    // Dim the [▾] type-selector chevron
+    ColumnSpan chevron = commandRowChevronSpan(t);
+    if (chevron.valid)
+        fillIndicatorCols(IND_HEX_DIM, line, chevron.start, chevron.end);
+
     // Dim label text: source arrow/placeholder + its ▾ dropdown arrow
     ColumnSpan srcSpan = commandRowSrcSpan(t);
     if (srcSpan.valid) {
@@ -838,10 +843,12 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
     // CommandRow: Source / BaseAddress / Root class (type+name) editing
     if (lm->lineKind == LineKind::CommandRow) {
         if (t != EditTarget::BaseAddress && t != EditTarget::Source
-            && t != EditTarget::RootClassType && t != EditTarget::RootClassName) return false;
+            && t != EditTarget::RootClassType && t != EditTarget::RootClassName
+            && t != EditTarget::TypeSelector) return false;
         QString lineText = getLineText(m_sci, line);
         ColumnSpan s;
-        if (t == EditTarget::Source)             s = commandRowSrcSpan(lineText);
+        if (t == EditTarget::TypeSelector)       s = commandRowChevronSpan(lineText);
+        else if (t == EditTarget::Source)        s = commandRowSrcSpan(lineText);
         else if (t == EditTarget::BaseAddress)   s = commandRowAddrSpan(lineText);
         else if (t == EditTarget::RootClassType) s = commandRowRootTypeSpan(lineText);
         else                                     s = commandRowRootNameSpan(lineText);
@@ -959,8 +966,10 @@ static bool hitTestTarget(QsciScintilla* sci,
         return s.valid && col >= s.start && col < s.end;
     };
 
-    // CommandRow: interactive SRC/ADDR + root class (type+name)
+    // CommandRow: interactive chevron/SRC/ADDR + root class (type+name)
     if (lm.lineKind == LineKind::CommandRow) {
+        ColumnSpan chevron = commandRowChevronSpan(lineText);
+        if (inSpan(chevron)) { outTarget = EditTarget::TypeSelector; outLine = line; return true; }
         ColumnSpan ss = commandRowSrcSpan(lineText);
         if (inSpan(ss)) { outTarget = EditTarget::Source; outLine = line; return true; }
         ColumnSpan as = commandRowAddrSpan(lineText);
@@ -1102,11 +1111,15 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                 emit marginClicked(0, h.line, me->modifiers());
                 return true;
             }
-            // CommandRow: try ADDR edit or consume
+            // CommandRow: try chevron/ADDR edit or consume
             if (h.nodeId == kCommandRowId) {
                 int tLine; EditTarget t;
-                if (hitTestTarget(m_sci, m_meta, me->pos(), tLine, t))
-                    beginInlineEdit(t, tLine);
+                if (hitTestTarget(m_sci, m_meta, me->pos(), tLine, t)) {
+                    if (t == EditTarget::TypeSelector)
+                        emit typeSelectorRequested();
+                    else
+                        beginInlineEdit(t, tLine);
+                }
                 return true;  // consume all CommandRow clicks
             }
             if (h.nodeId != 0) {
@@ -1369,6 +1382,7 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
 // ── Begin inline edit ──
 
 bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
+    if (target == EditTarget::TypeSelector) return false;  // handled by popup, not inline edit
     if (m_editState.active) return false;
     m_hoveredNodeId = 0;
     m_hoveredLine = -1;
@@ -1937,6 +1951,7 @@ void RcxEditor::applyHoverCursor() {
             case EditTarget::ArrayElementType:
             case EditTarget::PointerTarget:
             case EditTarget::RootClassType:
+            case EditTarget::TypeSelector:
                 desired = Qt::PointingHandCursor;
                 break;
             default:

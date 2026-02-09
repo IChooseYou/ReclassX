@@ -348,9 +348,17 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                 }
             }
 
-            // Show referenced struct children: at dereferenced address if non-NULL,
-            // otherwise at offset 0 as a struct template preview
+            // Determine if pointer target is actually readable
             uint64_t pBase = (ptrVal != 0) ? ptrToProviderAddr(tree, ptrVal) : 0;
+            bool ptrReadable = (ptrVal != 0) && prov.isReadable(pBase, 1);
+
+            // For invalid/unreadable pointers: use NullProvider (shows zeros)
+            // and reset margin offsets (unsigned wrap cancels baseAddress)
+            static NullProvider s_nullProv;
+            const Provider& childProv = ptrReadable ? prov : static_cast<const Provider&>(s_nullProv);
+            if (!ptrReadable)
+                pBase = (uint64_t)0 - tree.baseAddress;
+
             qulonglong key = pBase ^ (node.refId * kGoldenRatio);
             if (!state.ptrVisiting.contains(key)) {
                 state.ptrVisiting.insert(key);
@@ -358,7 +366,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                 if (refIdx >= 0) {
                     const Node& ref = tree.nodes[refIdx];
                     if (ref.kind == NodeKind::Struct || ref.kind == NodeKind::Array)
-                        composeParent(state, tree, prov, refIdx,
+                        composeParent(state, tree, childProv, refIdx,
                                       depth, pBase, ref.id,
                                       /*isArrayChild=*/true);
                 }
@@ -474,7 +482,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     }
 
     // Emit CommandRow as line 0 (combined: source + address + root class type + name)
-    const QString cmdRowText = QStringLiteral("source\u25BE \u00B7 0x0 \u00B7 struct\u25BE <no class> {");
+    const QString cmdRowText = QStringLiteral("[\u25B8] source\u25BE \u00B7 0x0 \u00B7 struct\u25BE <no class> {");
     {
         LineMeta lm;
         lm.nodeIdx   = -1;

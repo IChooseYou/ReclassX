@@ -61,6 +61,7 @@ signals:
     void inlineEditCommitted(int nodeIdx, int subLine,
                              EditTarget target, const QString& text);
     void inlineEditCancelled();
+    void typeSelectorRequested();
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;

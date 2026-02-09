@@ -9,8 +9,6 @@
 #include <QFutureWatcher>
 #include <memory>
 
-class QSplitter;
-
 namespace rcx {
 
 class RcxController;
@@ -80,7 +78,7 @@ public:
     ~RcxController() override;
 
     RcxEditor* primaryEditor() const;
-    RcxEditor* addSplitEditor(QSplitter* splitter);
+    RcxEditor* addSplitEditor(QWidget* parent = nullptr);
     void removeSplitEditor(RcxEditor* editor);
     QList<RcxEditor*> editors() const { return m_editors; }
 
@@ -146,6 +144,7 @@ private:
     void attachToProcess(uint32_t pid, const QString& processName);
     void switchToSavedSource(int idx);
     void pushSavedSourcesToEditors();
+    void showTypeSelectorPopup(RcxEditor* editor);
 
     // ── Auto-refresh methods ──
     void setupAutoRefresh();

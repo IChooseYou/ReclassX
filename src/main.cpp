@@ -10,7 +10,8 @@
 #include <QStatusBar>
 #include <QLabel>
 #include <QSplitter>
-#include <QStackedWidget>
+#include <QTabWidget>
+#include <QTabBar>
 #include <QPointer>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -38,6 +39,7 @@
 #include <QDialog>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexercpp.h>
+#include <QProxyStyle>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -113,6 +115,18 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
 }
 #endif
 
+class MenuBarStyle : public QProxyStyle {
+public:
+    using QProxyStyle::QProxyStyle;
+    QSize sizeFromContents(ContentsType type, const QStyleOption* opt,
+                           const QSize& sz, const QWidget* w) const override {
+        QSize s = QProxyStyle::sizeFromContents(type, opt, sz, w);
+        if (type == CT_MenuBarItem)
+            s.setHeight(s.height() + qRound(s.height() * 0.5));
+        return s;
+    }
+};
+
 namespace rcx {
 
 class MainWindow : public QMainWindow {
@@ -122,6 +136,7 @@ public:
 
 private slots:
     void newFile();
+    void newDocument();
     void selfTest();
     void openFile();
     void saveFile();
@@ -151,21 +166,26 @@ public:
     void project_close(QMdiSubWindow* sub = nullptr);
 
 private:
-    enum ViewMode { VM_Reclass, VM_Rendered };
+    enum ViewMode { VM_Reclass, VM_Rendered, VM_Debug };
 
     QMdiArea* m_mdiArea;
     QLabel*   m_statusLabel;
     PluginManager m_pluginManager;
 
+    struct SplitPane {
+        QTabWidget*    tabWidget = nullptr;
+        RcxEditor*     editor    = nullptr;
+        QsciScintilla* rendered  = nullptr;
+        ViewMode       viewMode  = VM_Reclass;
+        uint64_t       lastRenderedRootId = 0;
+    };
+
     struct TabState {
-        RcxDocument*              doc;
-        RcxController*            ctrl;
-        QSplitter*                splitter;
-        QStackedWidget*           stack       = nullptr;
-        QPointer<QsciScintilla>   rendered;
-        ViewMode                  viewMode    = VM_Reclass;
-        uint64_t                  lastRenderedRootId      = 0;
-        int                       lastRenderedFirstLine   = 0;
+        RcxDocument*       doc;
+        RcxController*     ctrl;
+        QSplitter*         splitter;
+        QVector<SplitPane> panes;
+        int                activePaneIdx = 0;
     };
     QMap<QMdiSubWindow*, TabState> m_tabs;
 
@@ -183,10 +203,17 @@ private:
     void updateWindowTitle();
 
     void setViewMode(ViewMode mode);
-    void updateRenderedView(TabState& tab);
+    void updateRenderedView(TabState& tab, SplitPane& pane);
+    void updateAllRenderedPanes(TabState& tab);
     void syncRenderMenuState();
     uint64_t findRootStructForNode(const NodeTree& tree, uint64_t nodeId) const;
     void setupRenderedSci(QsciScintilla* sci);
+
+    SplitPane createSplitPane(TabState& tab);
+    void applyTabWidgetStyle(QTabWidget* tw);
+    SplitPane* findPaneByTabWidget(QTabWidget* tw);
+    SplitPane* findActiveSplitPane();
+    RcxEditor* activePaneEditor();
 
     // Workspace dock
     QDockWidget*        m_workspaceDock  = nullptr;
@@ -210,6 +237,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createMenus();
     createStatusBar();
 
+
+    // Larger click targets + subtle hover on menu bar
+    {
+        menuBar()->setStyle(new MenuBarStyle(menuBar()->style()));
+        QPalette mp = menuBar()->palette();
+        mp.setColor(QPalette::Highlight, QColor(43, 43, 43));
+        menuBar()->setPalette(mp);
+    }
+
     // Load plugins
     m_pluginManager.LoadPlugins();
 
@@ -219,31 +255,30 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         syncRenderMenuState();
         rebuildWorkspaceModel();
     });
+
+    // Track which split pane has focus (for menu-driven view switching)
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
+        if (!now) return;
+        auto* tab = activeTab();
+        if (!tab) return;
+        for (int i = 0; i < tab->panes.size(); ++i) {
+            if (tab->panes[i].tabWidget && tab->panes[i].tabWidget->isAncestorOf(now)) {
+                tab->activePaneIdx = i;
+                return;
+            }
+        }
+    });
 }
 
 QIcon MainWindow::makeIcon(const QString& svgPath) {
-    // Render SVG at 14x14 (2px smaller)
-    QSvgRenderer renderer(svgPath);
-    QPixmap svgPixmap(14, 14);
-    svgPixmap.fill(Qt::transparent);
-    QPainter svgPainter(&svgPixmap);
-    renderer.render(&svgPainter);
-    svgPainter.end();
-    
-    // Center it in a 16x16 canvas
-    QPixmap pixmap(16, 16);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.drawPixmap(1, 1, svgPixmap);  // Offset by 1px on each side
-    painter.end();
-    
-    return QIcon(pixmap);
+    return QIcon(svgPath);
 }
 
 void MainWindow::createMenus() {
     // File
     auto* file = menuBar()->addMenu("&File");
-    file->addAction(makeIcon(":/vsicons/file.svg"), "&New", QKeySequence::New, this, &MainWindow::newFile);
+    file->addAction("&New", QKeySequence::New, this, &MainWindow::newDocument);
+    file->addAction("New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::newFile);
     file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", QKeySequence::Open, this, &MainWindow::openFile);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
@@ -260,7 +295,7 @@ void MainWindow::createMenus() {
     edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
     edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
     edit->addSeparator();
-    edit->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
+    edit->addAction("&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
 
     // View
     auto* view = menuBar()->addMenu("&View");
@@ -311,30 +346,131 @@ void MainWindow::createStatusBar() {
     m_statusLabel = new QLabel("Ready");
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->setStyleSheet("QStatusBar { background: #252526; color: #858585; }");
+
+    QSettings settings("ReclassX", "ReclassX");
+    QString fontName = settings.value("font", "Consolas").toString();
+    QFont f(fontName, 12);
+    f.setFixedPitch(true);
+    statusBar()->setFont(f);
+}
+
+void MainWindow::applyTabWidgetStyle(QTabWidget* tw) {
+    QSettings settings("ReclassX", "ReclassX");
+    QString fontName = settings.value("font", "Consolas").toString();
+    QFont tabFont(fontName, 12);
+    tabFont.setFixedPitch(true);
+    tw->tabBar()->setFont(tabFont);
+    tw->setStyleSheet(QStringLiteral(
+        "QTabWidget::pane { border: none; }"
+        "QTabBar::tab {"
+        "  background: #1e1e1e;"
+        "  color: #585858;"
+        "  padding: 4px 12px;"
+        "  border: none;"
+        "  min-width: 60px;"
+        "}"
+        "QTabBar::tab:selected {"
+        "  color: #d4d4d4;"
+        "}"
+        "QTabBar::tab:hover {"
+        "  color: #d4d4d4;"
+        "}"
+    ));
+    tw->tabBar()->setExpanding(false);
+}
+
+MainWindow::SplitPane MainWindow::createSplitPane(TabState& tab) {
+    SplitPane pane;
+
+    pane.tabWidget = new QTabWidget;
+    pane.tabWidget->setTabPosition(QTabWidget::South);
+    applyTabWidgetStyle(pane.tabWidget);
+
+    // Create editor via controller (parent = tabWidget for ownership)
+    pane.editor = tab.ctrl->addSplitEditor(pane.tabWidget);
+    pane.tabWidget->addTab(pane.editor, "Reclass");     // index 0
+
+    // Create per-pane rendered C++ view
+    pane.rendered = new QsciScintilla;
+    setupRenderedSci(pane.rendered);
+    pane.tabWidget->addTab(pane.rendered, "C/C++");     // index 1
+
+    // Debug placeholder
+    auto* debugPage = new QWidget;
+    debugPage->setStyleSheet("background: #1e1e1e;");
+    pane.tabWidget->addTab(debugPage, "Debug");         // index 2
+
+    pane.tabWidget->setCurrentIndex(0);
+    pane.viewMode = VM_Reclass;
+
+    // Add to splitter
+    tab.splitter->addWidget(pane.tabWidget);
+
+    // Connect per-pane tab bar switching
+    QTabWidget* tw = pane.tabWidget;
+    connect(tw, &QTabWidget::currentChanged, this, [this, tw](int index) {
+        // Find which pane this QTabWidget belongs to
+        SplitPane* p = findPaneByTabWidget(tw);
+        if (!p) return;
+
+        if (index == 2)      p->viewMode = VM_Debug;
+        else if (index == 1) p->viewMode = VM_Rendered;
+        else                 p->viewMode = VM_Reclass;
+
+        if (index == 1) {
+            // Find the TabState that owns this pane and update rendered view
+            for (auto& tab : m_tabs) {
+                for (auto& pane : tab.panes) {
+                    if (&pane == p) {
+                        updateRenderedView(tab, pane);
+                        break;
+                    }
+                }
+            }
+        }
+        syncRenderMenuState();
+    });
+
+    return pane;
+}
+
+MainWindow::SplitPane* MainWindow::findPaneByTabWidget(QTabWidget* tw) {
+    for (auto& tab : m_tabs) {
+        for (auto& pane : tab.panes) {
+            if (pane.tabWidget == tw)
+                return &pane;
+        }
+    }
+    return nullptr;
+}
+
+MainWindow::SplitPane* MainWindow::findActiveSplitPane() {
+    auto* tab = activeTab();
+    if (!tab || tab->panes.isEmpty()) return nullptr;
+    int idx = qBound(0, tab->activePaneIdx, tab->panes.size() - 1);
+    return &tab->panes[idx];
+}
+
+RcxEditor* MainWindow::activePaneEditor() {
+    auto* pane = findActiveSplitPane();
+    return pane ? pane->editor : nullptr;
 }
 
 QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
-    // QStackedWidget wraps [0] splitter (Reclass view) and [1] rendered QsciScintilla
-    auto* stack = new QStackedWidget;
     auto* splitter = new QSplitter(Qt::Horizontal);
     auto* ctrl = new RcxController(doc, splitter);
-    ctrl->addSplitEditor(splitter);
 
-    stack->addWidget(splitter);   // index 0 = Reclass view
-
-    auto* renderedSci = new QsciScintilla;
-    setupRenderedSci(renderedSci);
-    stack->addWidget(renderedSci); // index 1 = Rendered view
-    stack->setCurrentIndex(0);
-
-    auto* sub = m_mdiArea->addSubWindow(stack);
+    auto* sub = m_mdiArea->addSubWindow(splitter);
     sub->setWindowTitle(doc->filePath.isEmpty()
                         ? "Untitled" : QFileInfo(doc->filePath).fileName());
     sub->setAttribute(Qt::WA_DeleteOnClose);
     sub->showMaximized();
 
-    m_tabs[sub] = { doc, ctrl, splitter, stack, renderedSci,
-                    VM_Reclass, 0, 0 };
+    m_tabs[sub] = { doc, ctrl, splitter, {}, 0 };
+    auto& tab = m_tabs[sub];
+
+    // Create the initial split pane
+    tab.panes.append(createSplitPane(tab));
 
     connect(sub, &QObject::destroyed, this, [this, sub]() {
         auto it = m_tabs.find(sub);
@@ -349,8 +485,8 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
             this, [this, ctrl, sub](int nodeIdx) {
         if (nodeIdx >= 0 && nodeIdx < ctrl->document()->tree.nodes.size()) {
             auto& node = ctrl->document()->tree.nodes[nodeIdx];
-            auto it = m_tabs.find(sub);
-            if (it != m_tabs.end() && it->viewMode == VM_Rendered)
+            auto* ap = findActiveSplitPane();
+            if (ap && ap->viewMode == VM_Rendered)
                 m_statusLabel->setText(
                     QString("Rendered: %1 %2")
                         .arg(kindToString(node.kind))
@@ -365,10 +501,10 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
         } else {
             m_statusLabel->setText("Ready");
         }
-        // Update rendered view on selection change
+        // Update all rendered panes on selection change
         auto it = m_tabs.find(sub);
         if (it != m_tabs.end())
-            updateRenderedView(*it);
+            updateAllRenderedPanes(*it);
     });
     connect(ctrl, &RcxController::selectionChanged,
             this, [this](int count) {
@@ -378,14 +514,14 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
             m_statusLabel->setText(QString("%1 nodes selected").arg(count));
     });
 
-    // Update rendered view and workspace on document changes and undo/redo
+    // Update rendered panes and workspace on document changes and undo/redo
     connect(doc, &RcxDocument::documentChanged,
             this, [this, sub]() {
         auto it = m_tabs.find(sub);
         if (it != m_tabs.end())
             QTimer::singleShot(0, this, [this, sub]() {
                 auto it2 = m_tabs.find(sub);
-                if (it2 != m_tabs.end()) updateRenderedView(*it2);
+                if (it2 != m_tabs.end()) updateAllRenderedPanes(*it2);
                 rebuildWorkspaceModel();
             });
     });
@@ -395,7 +531,7 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
         if (it != m_tabs.end())
             QTimer::singleShot(0, this, [this, sub]() {
                 auto it2 = m_tabs.find(sub);
-                if (it2 != m_tabs.end()) updateRenderedView(*it2);
+                if (it2 != m_tabs.end()) updateAllRenderedPanes(*it2);
             });
     });
 
@@ -412,72 +548,106 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
     return sub;
 }
 
+// Build Ball + Material demo structs into a tree
+static void buildBallDemo(NodeTree& tree) {
+    // Ball struct (128 bytes = 0x80)
+    Node ball;
+    ball.kind = NodeKind::Struct;
+    ball.name = "aBall";
+    ball.structTypeName = "Ball";
+    ball.parentId = 0;
+    ball.offset = 0;
+    int bi = tree.addNode(ball);
+    uint64_t ballId = tree.nodes[bi].id;
+
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_00";   n.parentId = ballId; n.offset = 0;  tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_08";   n.parentId = ballId; n.offset = 8;  tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Vec4;   n.name = "position";   n.parentId = ballId; n.offset = 16; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity";   n.parentId = ballId; n.offset = 32; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex32;  n.name = "field_2C";   n.parentId = ballId; n.offset = 44; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Float;  n.name = "speed";      n.parentId = ballId; n.offset = 48; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 52; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Float;  n.name = "radius";     n.parentId = ballId; n.offset = 56; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex32;  n.name = "field_3C";   n.parentId = ballId; n.offset = 60; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Float;  n.name = "mass";       n.parentId = ballId; n.offset = 64; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_44";   n.parentId = ballId; n.offset = 68; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";     n.parentId = ballId; n.offset = 76; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex8;   n.name = "field_4D";   n.parentId = ballId; n.offset = 77; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex16;  n.name = "field_4E";   n.parentId = ballId; n.offset = 78; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 80; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex32;  n.name = "field_54";   n.parentId = ballId; n.offset = 84; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_58";   n.parentId = ballId; n.offset = 88; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_60";   n.parentId = ballId; n.offset = 96; tree.addNode(n); }
+
+    // Material struct (renamed from Physics, 40 bytes = 0x28)
+    Node mat;
+    mat.kind = NodeKind::Struct;
+    mat.name = "aMaterial";
+    mat.structTypeName = "Material";
+    mat.parentId = 0;
+    mat.offset = 0;
+    int mi = tree.addNode(mat);
+    uint64_t matId = tree.nodes[mi].id;
+
+    { Node n; n.kind = NodeKind::Hex64; n.name = "field_00"; n.parentId = matId; n.offset = 0;  tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64; n.name = "field_08"; n.parentId = matId; n.offset = 8;  tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64; n.name = "field_10"; n.parentId = matId; n.offset = 16; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64; n.name = "field_18"; n.parentId = matId; n.offset = 24; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64; n.name = "field_20"; n.parentId = matId; n.offset = 32; tree.addNode(n); }
+
+    // Pointer to Material in Ball struct
+    { Node n; n.kind = NodeKind::Pointer64; n.name = "material"; n.parentId = ballId; n.offset = 104; n.refId = matId; n.collapsed = true; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_70";   n.parentId = ballId; n.offset = 112; tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_78";   n.parentId = ballId; n.offset = 120; tree.addNode(n); }
+}
+
 void MainWindow::newFile() {
     project_new();
 }
 
-void MainWindow::selfTest() {
-    QString demoPath = QCoreApplication::applicationDirPath() + "/demo.rcx";
-    if (QFile::exists(demoPath)) {
-        project_open(demoPath);
-    } else {
-        // Create default demo with a single Ball struct
-        auto* doc = new RcxDocument(this);
-        doc->tree.baseAddress = 0x00400000;
-
-        Node ball;
-        ball.kind = NodeKind::Struct;
-        ball.name = "aBall";
-        ball.structTypeName = "ball";
-        ball.parentId = 0;
-        ball.offset = 0;
-        int bi = doc->tree.addNode(ball);
-        uint64_t ballId = doc->tree.nodes[bi].id;
-
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_00";   n.parentId = ballId; n.offset = 0;  doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_08";   n.parentId = ballId; n.offset = 8;  doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Vec4;   n.name = "position";   n.parentId = ballId; n.offset = 16; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity";   n.parentId = ballId; n.offset = 32; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_2C";   n.parentId = ballId; n.offset = 44; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "speed";      n.parentId = ballId; n.offset = 48; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 52; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "radius";     n.parentId = ballId; n.offset = 56; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_3C";   n.parentId = ballId; n.offset = 60; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Float;  n.name = "mass";       n.parentId = ballId; n.offset = 64; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_44";   n.parentId = ballId; n.offset = 68; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";     n.parentId = ballId; n.offset = 76; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_4D";   n.parentId = ballId; n.offset = 77; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_4E";   n.parentId = ballId; n.offset = 78; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 80; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex32;  n.name = "field_54";   n.parentId = ballId; n.offset = 84; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_58";   n.parentId = ballId; n.offset = 88; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_60";   n.parentId = ballId; n.offset = 96; doc->tree.addNode(n); }
-
-        // Physics struct (defined at root level)
-        Node phys;
-        phys.kind = NodeKind::Struct;
-        phys.name = "aPhysics";
-        phys.structTypeName = "Physics";
-        phys.parentId = 0;
-        phys.offset = 0;
-        int pi = doc->tree.addNode(phys);
-        uint64_t physId = doc->tree.nodes[pi].id;
-
-        { Node n; n.kind = NodeKind::Hex64; n.name = "field_00"; n.parentId = physId; n.offset = 0;  doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64; n.name = "field_08"; n.parentId = physId; n.offset = 8;  doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64; n.name = "field_10"; n.parentId = physId; n.offset = 16; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64; n.name = "field_18"; n.parentId = physId; n.offset = 24; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64; n.name = "field_20"; n.parentId = physId; n.offset = 32; doc->tree.addNode(n); }
-
-        // Pointer to Physics in ball struct
-        { Node n; n.kind = NodeKind::Pointer64; n.name = "physics"; n.parentId = ballId; n.offset = 104; n.refId = physId; n.collapsed = true; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_70";   n.parentId = ballId; n.offset = 112; doc->tree.addNode(n); }
-        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_78";   n.parentId = ballId; n.offset = 120; doc->tree.addNode(n); }
-
-        doc->save(demoPath);
-        doc->load(demoPath);
-        createTab(doc);
+void MainWindow::newDocument() {
+    auto* tab = activeTab();
+    if (!tab) {
+        project_new();
+        return;
     }
+    auto* doc = tab->doc;
+    auto* ctrl = tab->ctrl;
+
+    // Clear everything
+    doc->undoStack.clear();
+    doc->tree = NodeTree();
+    doc->tree.baseAddress = 0x00400000;
+    doc->filePath.clear();
+    doc->typeAliases.clear();
+    doc->modified = false;
+
+    // Build Ball + Material structs
+    buildBallDemo(doc->tree);
+
+    // Cross-platform writable buffer, zeroed (256 bytes covers Ball + spare)
+    QByteArray data(256, '\0');
+    doc->provider = std::make_shared<BufferProvider>(data);
+
+    // Focus on Ball struct
+    ctrl->setViewRootId(0);
+    for (const auto& n : doc->tree.nodes) {
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+            ctrl->setViewRootId(n.id);
+            break;
+        }
+    }
+    ctrl->clearSelection();
+    emit doc->documentChanged();
+
+    auto* sub = m_mdiArea->activeSubWindow();
+    if (sub) sub->setWindowTitle("Untitled");
+    updateWindowTitle();
+    rebuildWorkspaceModel();
+}
+
+void MainWindow::selfTest() {
+    project_new();
 }
 
 void MainWindow::openFile() {
@@ -506,7 +676,7 @@ void MainWindow::addNode() {
     if (!ctrl) return;
 
     uint64_t parentId = ctrl->viewRootId();  // default to current view root
-    auto* primary = ctrl->primaryEditor();
+    auto* primary = activePaneEditor();
     if (primary && primary->isEditing()) return;
     if (primary) {
         int ni = primary->currentNodeIndex();
@@ -524,7 +694,7 @@ void MainWindow::addNode() {
 void MainWindow::removeNode() {
     auto* ctrl = activeController();
     if (!ctrl) return;
-    auto* primary = ctrl->primaryEditor();
+    auto* primary = activePaneEditor();
     if (!primary || primary->isEditing()) return;
     QSet<int> indices = primary->selectedNodeIndices();
     if (indices.size() > 1) {
@@ -537,7 +707,7 @@ void MainWindow::removeNode() {
 void MainWindow::changeNodeType() {
     auto* ctrl = activeController();
     if (!ctrl) return;
-    auto* primary = ctrl->primaryEditor();
+    auto* primary = activePaneEditor();
     if (!primary) return;
     primary->beginInlineEdit(EditTarget::Type);
 }
@@ -545,7 +715,7 @@ void MainWindow::changeNodeType() {
 void MainWindow::renameNodeAction() {
     auto* ctrl = activeController();
     if (!ctrl) return;
-    auto* primary = ctrl->primaryEditor();
+    auto* primary = activePaneEditor();
     if (!primary) return;
     primary->beginInlineEdit(EditTarget::Name);
 }
@@ -553,7 +723,7 @@ void MainWindow::renameNodeAction() {
 void MainWindow::duplicateNodeAction() {
     auto* ctrl = activeController();
     if (!ctrl) return;
-    auto* primary = ctrl->primaryEditor();
+    auto* primary = activePaneEditor();
     if (!primary || primary->isEditing()) return;
     int ni = primary->currentNodeIndex();
     if (ni >= 0) ctrl->duplicateNode(ni);
@@ -562,15 +732,16 @@ void MainWindow::duplicateNodeAction() {
 void MainWindow::splitView() {
     auto* tab = activeTab();
     if (!tab) return;
-    tab->ctrl->addSplitEditor(tab->splitter);
+    tab->panes.append(createSplitPane(*tab));
 }
 
 void MainWindow::unsplitView() {
     auto* tab = activeTab();
-    if (!tab) return;
-    auto editors = tab->ctrl->editors();
-    if (editors.size() > 1)
-        tab->ctrl->removeSplitEditor(editors.last());
+    if (!tab || tab->panes.size() <= 1) return;
+    auto pane = tab->panes.takeLast();
+    tab->ctrl->removeSplitEditor(pane.editor);
+    pane.tabWidget->deleteLater();
+    tab->activePaneIdx = qBound(0, tab->activePaneIdx, tab->panes.size() - 1);
 }
 
 void MainWindow::undo() {
@@ -598,20 +769,27 @@ void MainWindow::setEditorFont(const QString& fontName) {
     f.setFixedPitch(true);
     for (auto& state : m_tabs) {
         state.ctrl->setEditorFont(fontName);
-        // Also update the rendered view font
-        if (state.rendered) {
-            state.rendered->setFont(f);
-            if (auto* lex = state.rendered->lexer()) {
-                lex->setFont(f);
-                for (int i = 0; i <= 127; i++)
-                    lex->setFont(f, i);
+        for (auto& pane : state.panes) {
+            // Update rendered view font
+            if (pane.rendered) {
+                pane.rendered->setFont(f);
+                if (auto* lex = pane.rendered->lexer()) {
+                    lex->setFont(f);
+                    for (int i = 0; i <= 127; i++)
+                        lex->setFont(f, i);
+                }
+                pane.rendered->setMarginsFont(f);
             }
-            state.rendered->setMarginsFont(f);
+            // Update per-pane tab bar font
+            if (pane.tabWidget)
+                applyTabWidgetStyle(pane.tabWidget);
         }
     }
     // Sync workspace tree font
     if (m_workspaceTree)
         m_workspaceTree->setFont(f);
+    // Sync status bar font
+    statusBar()->setFont(f);
 }
 
 RcxController* MainWindow::activeController() const {
@@ -650,14 +828,10 @@ void MainWindow::setupRenderedSci(QsciScintilla* sci) {
     f.setFixedPitch(true);
 
     sci->setFont(f);
-    sci->setReadOnly(true);
+    sci->setReadOnly(false);
     sci->setWrapMode(QsciScintilla::WrapNone);
-    sci->setCaretLineVisible(false);
-    sci->setPaper(QColor("#1e1e1e"));
-    sci->setColor(QColor("#d4d4d4"));
     sci->setTabWidth(4);
     sci->setIndentationsUseTabs(false);
-    sci->setCaretForegroundColor(QColor("#d4d4d4"));
     sci->SendScintilla(QsciScintillaBase::SCI_SETEXTRAASCENT, (long)2);
     sci->SendScintilla(QsciScintillaBase::SCI_SETEXTRADESCENT, (long)2);
 
@@ -672,7 +846,8 @@ void MainWindow::setupRenderedSci(QsciScintilla* sci) {
     sci->setMarginWidth(1, 0);
     sci->setMarginWidth(2, 0);
 
-    // C++ lexer for syntax highlighting
+    // C++ lexer for syntax highlighting — must be set BEFORE colors below,
+    // because setLexer() resets caret line, selection, and paper colors.
     auto* lexer = new QsciLexerCPP(sci);
     lexer->setFont(f);
     lexer->setColor(QColor("#569cd6"), QsciLexerCPP::Keyword);
@@ -693,28 +868,34 @@ void MainWindow::setupRenderedSci(QsciScintilla* sci) {
     }
     sci->setLexer(lexer);
     sci->setBraceMatching(QsciScintilla::NoBraceMatch);
+
+    // Colors applied AFTER setLexer() — the lexer resets these on attach
+    sci->setPaper(QColor("#1e1e1e"));
+    sci->setColor(QColor("#d4d4d4"));
+    sci->setCaretForegroundColor(QColor("#d4d4d4"));
+    sci->setCaretLineVisible(true);
+    sci->setCaretLineBackgroundColor(QColor(43, 43, 43));   // Match Reclass M_HOVER
+    sci->setSelectionBackgroundColor(QColor("#264f78"));     // Match Reclass edit selection
+    sci->setSelectionForegroundColor(QColor("#d4d4d4"));
 }
 
 // ── View mode / generator switching ──
 
 void MainWindow::setViewMode(ViewMode mode) {
-    auto* tab = activeTab();
-    if (!tab) return;
-    tab->viewMode = mode;
-    if (tab->stack) {
-        tab->stack->setCurrentIndex(mode == VM_Rendered ? 1 : 0);
-    }
-    if (mode == VM_Rendered) {
-        updateRenderedView(*tab);
-    }
+    auto* pane = findActiveSplitPane();
+    if (!pane) return;
+    pane->viewMode = mode;
+    int idx = (mode == VM_Rendered) ? 1 : (mode == VM_Debug) ? 2 : 0;
+    pane->tabWidget->setCurrentIndex(idx);
+    // The QTabWidget::currentChanged signal will handle updating the rendered view
     syncRenderMenuState();
 }
 
 void MainWindow::syncRenderMenuState() {
-    auto* tab = activeTab();
-    bool rendered = tab && tab->viewMode == VM_Rendered;
-    if (m_actViewRendered) m_actViewRendered->setEnabled(!rendered);
-    if (m_actViewReclass)  m_actViewReclass->setEnabled(rendered);
+    auto* pane = findActiveSplitPane();
+    ViewMode vm = pane ? pane->viewMode : VM_Reclass;
+    if (m_actViewRendered) m_actViewRendered->setEnabled(vm != VM_Rendered);
+    if (m_actViewReclass)  m_actViewReclass->setEnabled(vm != VM_Reclass);
 }
 
 // ── Find the root-level struct ancestor for a node ──
@@ -737,11 +918,11 @@ uint64_t MainWindow::findRootStructForNode(const NodeTree& tree, uint64_t nodeId
     return lastStruct;
 }
 
-// ── Update the rendered view for a tab ──
+// ── Update the rendered view for a single pane ──
 
-void MainWindow::updateRenderedView(TabState& tab) {
-    if (tab.viewMode != VM_Rendered) return;
-    if (!tab.rendered) return;
+void MainWindow::updateRenderedView(TabState& tab, SplitPane& pane) {
+    if (pane.viewMode != VM_Rendered) return;
+    if (!pane.rendered) return;
 
     // Determine which struct to render based on selection
     uint64_t rootId = 0;
@@ -763,26 +944,31 @@ void MainWindow::updateRenderedView(TabState& tab) {
 
     // Scroll restoration: save if same root, reset if different
     int restoreLine = 0;
-    if (rootId != 0 && rootId == tab.lastRenderedRootId) {
-        restoreLine = (int)tab.rendered->SendScintilla(
+    if (rootId != 0 && rootId == pane.lastRenderedRootId) {
+        restoreLine = (int)pane.rendered->SendScintilla(
             QsciScintillaBase::SCI_GETFIRSTVISIBLELINE);
     }
-    tab.lastRenderedRootId = rootId;
+    pane.lastRenderedRootId = rootId;
 
     // Set text
-    tab.rendered->setReadOnly(false);
-    tab.rendered->setText(text);
-    tab.rendered->setReadOnly(true);
+    pane.rendered->setText(text);
 
     // Update margin width for line count
-    int lineCount = tab.rendered->lines();
+    int lineCount = pane.rendered->lines();
     QString marginStr = QString(QString::number(lineCount).size() + 2, '0');
-    tab.rendered->setMarginWidth(0, marginStr);
+    pane.rendered->setMarginWidth(0, marginStr);
 
     // Restore scroll
     if (restoreLine > 0) {
-        tab.rendered->SendScintilla(QsciScintillaBase::SCI_SETFIRSTVISIBLELINE,
-                                    (unsigned long)restoreLine);
+        pane.rendered->SendScintilla(QsciScintillaBase::SCI_SETFIRSTVISIBLELINE,
+                                     (unsigned long)restoreLine);
+    }
+}
+
+void MainWindow::updateAllRenderedPanes(TabState& tab) {
+    for (auto& pane : tab.panes) {
+        if (pane.viewMode == VM_Rendered)
+            updateRenderedView(tab, pane);
     }
 }
 
@@ -871,23 +1057,13 @@ void MainWindow::showTypeAliasesDialog() {
 QMdiSubWindow* MainWindow::project_new() {
     auto* doc = new RcxDocument(this);
 
-    QByteArray data(16, '\0');
+    // Cross-platform writable buffer, zeroed (256 bytes covers Ball struct + spare)
+    QByteArray data(256, '\0');
     doc->loadData(data);
     doc->tree.baseAddress = 0x00400000;
 
-    Node root;
-    root.kind = NodeKind::Struct;
-    root.name = "Entity";
-    root.structTypeName = "Entity";
-    root.parentId = 0;
-    root.offset = 0;
-    int ri = doc->tree.addNode(root);
-    uint64_t rootId = doc->tree.nodes[ri].id;
-
-    { Node n; n.kind = NodeKind::Int32; n.name = "health"; n.parentId = rootId; n.offset = 0;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Int32; n.name = "armor";  n.parentId = rootId; n.offset = 4;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Float; n.name = "speed";  n.parentId = rootId; n.offset = 8;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex32; n.name = "flags";  n.parentId = rootId; n.offset = 12; doc->tree.addNode(n); }
+    // Build Ball + Material demo structs
+    buildBallDemo(doc->tree);
 
     auto* sub = createTab(doc);
     rebuildWorkspaceModel();

@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "typeselectorpopup.h"
 #include "providers/process_provider.h"
 #include "providerregistry.h"
 #include "processpicker.h"
@@ -15,6 +16,7 @@
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QSettings>
 #include <QtConcurrent/QtConcurrentRun>
 #ifdef _WIN32
 #include <psapi.h>
@@ -171,9 +173,8 @@ RcxEditor* RcxController::primaryEditor() const {
     return m_editors.isEmpty() ? nullptr : m_editors.first();
 }
 
-RcxEditor* RcxController::addSplitEditor(QSplitter* splitter) {
-    auto* editor = new RcxEditor(splitter);
-    splitter->addWidget(editor);
+RcxEditor* RcxController::addSplitEditor(QWidget* parent) {
+    auto* editor = new RcxEditor(parent);
     m_editors.append(editor);
     connectEditor(editor);
 
@@ -186,7 +187,7 @@ RcxEditor* RcxController::addSplitEditor(QSplitter* splitter) {
 
 void RcxController::removeSplitEditor(RcxEditor* editor) {
     m_editors.removeOne(editor);
-    editor->deleteLater();
+    // Caller (MainWindow) owns the parent QTabWidget and handles widget destruction.
 }
 
 void RcxController::connectEditor(RcxEditor* editor) {
@@ -201,6 +202,12 @@ void RcxController::connectEditor(RcxEditor* editor) {
     connect(editor, &RcxEditor::nodeClicked,
             this, [this, editor](int line, uint64_t nodeId, Qt::KeyboardModifiers mods) {
         handleNodeClick(editor, line, nodeId, mods);
+    });
+
+    // Type selector popup
+    connect(editor, &RcxEditor::typeSelectorRequested,
+            this, [this, editor]() {
+        showTypeSelectorPopup(editor);
     });
 
     // Inline editing signals
@@ -1054,15 +1061,11 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
             editor->beginInlineEdit(EditTarget::Name, line);
         });
 
-        menu.addAction(icon("symbol-structure.svg"), "Change &Type\tT", [editor, line]() {
+        menu.addAction("Change &Type\tT", [editor, line]() {
             editor->beginInlineEdit(EditTarget::Type, line);
         });
 
         menu.addSeparator();
-
-        menu.addAction(icon("add.svg"), "&Add Field Below\tInsert", [this, parentId]() {
-            insertNode(parentId, -1, NodeKind::Hex64, "newField");
-        });
 
         if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) {
             menu.addAction(icon("diff-added.svg"), "Add &Child", [this, nodeId]() {
@@ -1157,14 +1160,6 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         }
     }
 
-    menu.addAction(icon("add.svg"), "Add Hex64 at Root", [this]() {
-        uint64_t target = m_viewRootId ? m_viewRootId : 0;
-        insertNode(target, -1, NodeKind::Hex64, "newField");
-    });
-    menu.addAction(icon("symbol-structure.svg"), "Add Struct at Root", [this]() {
-        insertNode(0, -1, NodeKind::Struct, "NewClass");
-        setViewRootId(0);  // show all so the new struct is visible
-    });
     menu.addAction(icon("diff-added.svg"), "Append 128 bytes", [this]() {
         uint64_t target = m_viewRootId ? m_viewRootId : 0;
         m_suppressRefresh = true;
@@ -1450,27 +1445,97 @@ void RcxController::updateCommandRow() {
             .arg(elide(src, 40), elide(addr, 24), elide(sym, 40));
     }
 
-    // Build row 2: root class type + name
+    // Build row 2: root class type + name (uses current view root)
     QString row2;
-    for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
-        const auto& n = m_doc->tree.nodes[i];
-        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+    if (m_viewRootId != 0) {
+        int vi = m_doc->tree.indexOfId(m_viewRootId);
+        if (vi >= 0) {
+            const auto& n = m_doc->tree.nodes[vi];
             QString keyword = n.resolvedClassKeyword();
             QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
             row2 = QStringLiteral("%1\u25BE %2 {")
-                .arg(keyword, className);
-            break;
+                .arg(keyword, className.isEmpty() ? QStringLiteral("<no name>") : className);
+        }
+    }
+    if (row2.isEmpty()) {
+        // Fallback: find first root struct
+        for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+            const auto& n = m_doc->tree.nodes[i];
+            if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                QString keyword = n.resolvedClassKeyword();
+                QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
+                row2 = QStringLiteral("%1\u25BE %2 {")
+                    .arg(keyword, className);
+                break;
+            }
         }
     }
     if (row2.isEmpty())
         row2 = QStringLiteral("struct\u25BE <no class> {");
 
-    QString combined = row + QStringLiteral(" \u00B7 ") + row2;
+    QString combined = QStringLiteral("[\u25B8] ") + row + QStringLiteral(" \u00B7 ") + row2;
 
     for (auto* ed : m_editors) {
         ed->setCommandRowText(combined);
     }
     emit selectionChanged(m_selIds.size());
+}
+
+void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
+    // Collect all root-level struct types
+    QVector<TypeEntry> types;
+    for (const auto& n : m_doc->tree.nodes) {
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+            TypeEntry entry;
+            entry.id = n.id;
+            entry.displayName = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
+            entry.classKeyword = n.resolvedClassKeyword();
+            types.append(entry);
+        }
+    }
+
+    // Get font with zoom
+    QSettings settings("ReclassX", "ReclassX");
+    QString fontName = settings.value("font", "Consolas").toString();
+    QFont font(fontName, 12);
+    font.setFixedPitch(true);
+    auto* sci = editor->scintilla();
+    int zoom = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETZOOM);
+    font.setPointSize(font.pointSize() + zoom);
+
+    // Position: bottom-left of the [▸] span on line 0
+    long lineStart = sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 0);
+    int lineH = (int)sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT, 0);
+    int x = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION,
+                                     0, lineStart);
+    int y = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION,
+                                     0, lineStart);
+    QPoint pos = sci->viewport()->mapToGlobal(QPoint(x, y + lineH));
+
+    auto* popup = new TypeSelectorPopup(editor);
+    popup->setFont(font);
+    popup->setTypes(types, m_viewRootId);
+
+    connect(popup, &TypeSelectorPopup::typeSelected,
+            this, [this](uint64_t structId) {
+        setViewRootId(structId);
+    });
+    connect(popup, &TypeSelectorPopup::createNewTypeRequested,
+            this, [this]() {
+        // Create a new root struct with no name
+        Node n;
+        n.kind = NodeKind::Struct;
+        n.name = QString();
+        n.parentId = 0;
+        n.offset = 0;
+        n.id = m_doc->tree.reserveId();
+        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n}));
+        setViewRootId(n.id);
+    });
+    connect(popup, &TypeSelectorPopup::dismissed,
+            popup, &QObject::deleteLater);
+
+    popup->popup(pos);
 }
 
 void RcxController::attachToProcess(uint32_t pid, const QString& processName) {

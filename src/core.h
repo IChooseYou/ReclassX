@@ -489,7 +489,7 @@ struct ColumnSpan {
 
 enum class EditTarget { Name, Type, Value, BaseAddress, Source, ArrayIndex, ArrayCount,
                         ArrayElementType, ArrayElementCount, PointerTarget,
-                        RootClassType, RootClassName };
+                        RootClassType, RootClassName, TypeSelector };
 
 // Column layout constants (shared with format.cpp span computation)
 inline constexpr int kFoldCol     = 3;   // 3-char fold indicator prefix per line
@@ -633,6 +633,16 @@ inline ColumnSpan commandRowRootNameSpan(const QString& lineText) {
     while (nameEnd > nameStart && lineText[nameEnd - 1].isSpace()) nameEnd--;
     if (nameEnd <= nameStart) return {};
     return {nameStart, nameEnd, true};
+}
+
+// ── CommandRow type-selector chevron span ──
+// Detects "[▸]" at the start of the command row text
+
+inline ColumnSpan commandRowChevronSpan(const QString& lineText) {
+    if (lineText.size() < 3) return {};
+    if (lineText[0] == '[' && lineText[1] == QChar(0x25B8) && lineText[2] == ']')
+        return {0, 3, true};
+    return {};
 }
 
 // ── Array element type/count spans (within type column of array headers) ──
