@@ -40,6 +40,7 @@
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexercpp.h>
 #include <QProxyStyle>
+#include <QDesktopServices>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -745,11 +746,34 @@ void MainWindow::redo() {
 }
 
 void MainWindow::about() {
-    QMessageBox::about(this, "About ReclassX",
-        "ReclassX - Structured Binary Editor\n"
-        "Built with Qt 6 + QScintilla\n\n"
-        "Margin-driven UI with offset display,\n"
-        "fold markers, and status flags.");
+    QDialog dlg(this);
+    dlg.setWindowTitle("About ReclassX");
+    dlg.setFixedSize(260, 120);
+    auto* lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(20, 16, 20, 16);
+    lay->setSpacing(12);
+
+    auto* buildLabel = new QLabel(
+        QStringLiteral("<span style='color:#858585;font-size:11px;'>"
+                       "Build&ensp;" __DATE__ "&ensp;" __TIME__ "</span>"));
+    buildLabel->setAlignment(Qt::AlignCenter);
+    lay->addWidget(buildLabel);
+
+    auto* ghBtn = new QPushButton("GitHub");
+    ghBtn->setCursor(Qt::PointingHandCursor);
+    ghBtn->setStyleSheet(
+        "QPushButton {"
+        "  background: #2a2a2a; color: #d4d4d4; border: 1px solid #3f3f3f;"
+        "  border-radius: 4px; padding: 5px 16px; font-size: 12px;"
+        "}"
+        "QPushButton:hover { background: #333333; border-color: #505050; }");
+    connect(ghBtn, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(QUrl("https://github.com/IChooseYou/Reclass"));
+    });
+    lay->addWidget(ghBtn, 0, Qt::AlignCenter);
+
+    dlg.setStyleSheet("QDialog { background: #1e1e1e; }");
+    dlg.exec();
 }
 
 void MainWindow::setEditorFont(const QString& fontName) {
