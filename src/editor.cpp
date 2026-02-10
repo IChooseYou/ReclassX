@@ -466,7 +466,8 @@ void RcxEditor::applyHexDimming(const QVector<LineMeta>& meta) {
             long pos, len; lineRangeNoEol(m_sci, i, pos, len);
             if (len > 0)
                 m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, pos, len);
-        } else if (meta[i].lineKind == LineKind::Header) {
+        } else if (meta[i].lineKind == LineKind::Header ||
+                   meta[i].lineKind == LineKind::CommandRow) {
             long endPos = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, (unsigned long)i);
             for (long p = endPos - 1; p >= 0; --p) {
                 int ch = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETCHARAT, (unsigned long)p);
