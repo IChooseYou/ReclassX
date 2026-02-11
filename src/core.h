@@ -230,11 +230,12 @@ struct Node {
         return classKeyword.isEmpty() ? QStringLiteral("struct") : classKeyword;
     }
 
-    // Helper: is this a string-like array (char[] or wchar_t[])?
-    bool isStringArray() const {
-        return kind == NodeKind::Array &&
-               (elementKind == NodeKind::UInt8 || elementKind == NodeKind::UInt16);
-    }
+    // NOTE: isStringArray() was checking UInt8/UInt16 instead of UTF8/UTF16.
+    // Currently unused — commented out until a caller needs it.
+    // bool isStringArray() const {
+    //     return kind == NodeKind::Array &&
+    //            (elementKind == NodeKind::UTF8 || elementKind == NodeKind::UTF16);
+    // }
 };
 
 // ── NodeTree ──
@@ -434,6 +435,7 @@ struct LineMeta {
     int      effectiveTypeW = 14;  // Per-line type column width used for rendering
     int      effectiveNameW = 22;  // Per-line name column width used for rendering
     QString  pointerTargetName;    // Resolved target type name for Pointer32/64 (empty = "void")
+    bool     isArrayElement  = false;  // true for synthesized primitive array element lines
 };
 
 inline bool isSyntheticLine(const LineMeta& lm) {
@@ -674,6 +676,16 @@ inline ColumnSpan arrayElemCountSpanFor(const LineMeta& lm, const QString& lineT
     return {openBracket + 1, closeBracket, true};
 }
 
+// Click-area version: includes brackets [N] for hit testing
+inline ColumnSpan arrayElemCountClickSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isArrayHeader) return {};
+    int ind = kFoldCol + lm.depth * 3;
+    int openBracket = lineText.indexOf('[', ind);
+    int closeBracket = lineText.indexOf(']', openBracket);
+    if (openBracket < 0 || closeBracket < 0 || closeBracket <= openBracket + 1) return {};
+    return {openBracket, closeBracket + 1, true};
+}
+
 // ── Pointer kind/target spans (within type column of pointer fields) ──
 // Line format: "   void*          name  -> 0x..."
 // pointerTargetSpan covers the target name before '*'
@@ -760,9 +772,9 @@ namespace fmt {
     QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation, int hexDigits = 8);
     QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType = kColType, int colName = kColName);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
-    QString fmtArrayHeader(const Node& node, int depth, int viewIdx, bool collapsed, int colType = kColType, int colName = kColName);
+    QString fmtArrayHeader(const Node& node, int depth, int viewIdx, bool collapsed, int colType = kColType, int colName = kColName, const QString& elemStructName = {});
     QString structTypeName(const Node& node);  // Full type string for struct headers
-    QString arrayTypeName(NodeKind elemKind, int count);
+    QString arrayTypeName(NodeKind elemKind, int count, const QString& structName = {});
     QString pointerTypeName(NodeKind kind, const QString& targetName);
     QString fmtPointerHeader(const Node& node, int depth, bool collapsed,
                              const Provider& prov, uint64_t addr,

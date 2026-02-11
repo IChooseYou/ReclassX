@@ -1,8 +1,6 @@
 #include "controller.h"
 #include "typeselectorpopup.h"
-#include "providers/process_provider.h"
 #include "providerregistry.h"
-#include "processpicker.h"
 #include <Qsci/qsciscintilla.h>
 #include <QSplitter>
 #include <QFile>
@@ -18,9 +16,7 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QtConcurrent/QtConcurrentRun>
-#ifdef _WIN32
-#include <psapi.h>
-#endif
+#include <limits>
 
 namespace rcx {
 
@@ -204,10 +200,16 @@ void RcxController::connectEditor(RcxEditor* editor) {
         handleNodeClick(editor, line, nodeId, mods);
     });
 
-    // Type selector popup
+    // Type selector popup (command row chevron)
     connect(editor, &RcxEditor::typeSelectorRequested,
             this, [this, editor]() {
         showTypeSelectorPopup(editor);
+    });
+
+    // Type picker popup (array element type / pointer target)
+    connect(editor, &RcxEditor::typePickerRequested,
+            this, [this, editor](EditTarget target, int nodeIdx, QPoint globalPos) {
+        showTypePickerPopup(editor, target, nodeIdx, globalPos);
     });
 
     // Inline editing signals
@@ -374,45 +376,6 @@ void RcxController::connectEditor(RcxEditor* editor) {
                     refresh();
                 }
             }
-            else if (text == QStringLiteral("process")) {
-#ifdef _WIN32
-                auto* w = qobject_cast<QWidget*>(parent());
-                ProcessPicker picker(w);
-                if (picker.exec() == QDialog::Accepted) {
-                    // Save current source's base address before switching
-                    if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size())
-                        m_savedSources[m_activeSourceIdx].baseAddress = m_doc->tree.baseAddress;
-
-                    uint32_t pid = picker.selectedProcessId();
-                    QString procName = picker.selectedProcessName();
-                    attachToProcess(pid, procName);
-
-                    // Check if this process is already saved
-                    int existingIdx = -1;
-                    for (int i = 0; i < m_savedSources.size(); i++) {
-                        if (m_savedSources[i].kind == QStringLiteral("Process")
-                            && m_savedSources[i].pid == pid) {
-                            existingIdx = i;
-                            break;
-                        }
-                    }
-                    if (existingIdx >= 0) {
-                        m_activeSourceIdx = existingIdx;
-                        m_savedSources[existingIdx].baseAddress = m_doc->tree.baseAddress;
-                    } else {
-                        SavedSourceEntry entry;
-                        entry.kind = QStringLiteral("Process");
-                        entry.displayName = procName;
-                        entry.pid = pid;
-                        entry.processName = procName;
-                        entry.baseAddress = m_doc->tree.baseAddress;
-                        m_savedSources.append(entry);
-                        m_activeSourceIdx = m_savedSources.size() - 1;
-                    }
-                    refresh();
-                }
-#endif
-            }
             else
             {
                 // Look up provider in registry
@@ -447,13 +410,41 @@ void RcxController::connectEditor(RcxEditor* editor) {
 
                         // Apply provider or show error
                         if (provider) {
+                            // Save current source's base address before switching
+                            if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size())
+                                m_savedSources[m_activeSourceIdx].baseAddress = m_doc->tree.baseAddress;
+
                             uint64_t newBase = provider->base();
+                            QString displayName = provider->name();
                             m_doc->undoStack.clear();
                             m_doc->provider = std::move(provider);
                             m_doc->dataPath.clear();
                             m_doc->tree.baseAddress = newBase;
                             resetSnapshot();
                             emit m_doc->documentChanged();
+
+                            // Save as a source for quick-switch
+                            QString identifier = providerInfo->identifier;
+                            int existingIdx = -1;
+                            for (int i = 0; i < m_savedSources.size(); i++) {
+                                if (m_savedSources[i].kind == identifier
+                                    && m_savedSources[i].providerTarget == target) {
+                                    existingIdx = i;
+                                    break;
+                                }
+                            }
+                            if (existingIdx >= 0) {
+                                m_activeSourceIdx = existingIdx;
+                                m_savedSources[existingIdx].baseAddress = m_doc->tree.baseAddress;
+                            } else {
+                                SavedSourceEntry entry;
+                                entry.kind = identifier;
+                                entry.displayName = displayName;
+                                entry.providerTarget = target;
+                                entry.baseAddress = m_doc->tree.baseAddress;
+                                m_savedSources.append(entry);
+                                m_activeSourceIdx = m_savedSources.size() - 1;
+                            }
                             refresh();
                         } else if (!errorMsg.isEmpty()) {
                             QMessageBox::warning(qobject_cast<QWidget*>(parent()), "Provider Error", errorMsg);
@@ -917,7 +908,9 @@ void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text,
     if (!m_doc->provider->isWritable()) return;
 
     const Node& node = m_doc->tree.nodes[nodeIdx];
-    uint64_t addr = m_doc->tree.computeOffset(nodeIdx);
+    int64_t signedAddr = m_doc->tree.computeOffset(nodeIdx);
+    if (signedAddr < 0) return;  // malformed tree: negative offset
+    uint64_t addr = static_cast<uint64_t>(signedAddr);
 
     // For vector components, redirect to float parsing at sub-offset
     NodeKind editKind = node.kind;
@@ -1543,7 +1536,7 @@ void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
     popup->setTypes(types, m_viewRootId);
 
     connect(popup, &TypeSelectorPopup::typeSelected,
-            this, [this](uint64_t structId) {
+            this, [this](uint64_t structId, const QString&) {
         setViewRootId(structId);
     });
     connect(popup, &TypeSelectorPopup::createNewTypeRequested,
@@ -1564,51 +1557,169 @@ void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
     popup->popup(pos);
 }
 
-void RcxController::attachToProcess(uint32_t pid, const QString& processName) {
-#ifdef _WIN32
-    HANDLE hProc = OpenProcess(
-        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION
-        | PROCESS_QUERY_INFORMATION,
-        FALSE, pid);
-    if (!hProc) {
-        QMessageBox::warning(qobject_cast<QWidget*>(parent()),
-            "Attach Failed",
-            QString("Could not open process %1 (PID %2).\n"
-                    "Try running as administrator.")
-                .arg(processName).arg(pid));
-        return;
-    }
+void RcxController::showTypePickerPopup(RcxEditor* editor, EditTarget target,
+                                        int nodeIdx, QPoint globalPos) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    const Node& node = m_doc->tree.nodes[nodeIdx];
 
-    // Grab main module for initial view region
-    HMODULE hMod = nullptr;
-    DWORD needed = 0;
-    uint64_t base = 0;
-    int regionSize = 0x10000;
+    QVector<TypeEntry> entries;
+    uint64_t currentId = 0;
 
-    if (EnumProcessModulesEx(hProc, &hMod, sizeof(hMod), &needed, LIST_MODULES_ALL)
-        && hMod)
-    {
-        MODULEINFO mi{};
-        if (GetModuleInformation(hProc, hMod, &mi, sizeof(mi))) {
-            base = (uint64_t)mi.lpBaseOfDll;
-            regionSize = (int)mi.SizeOfImage;
+    // Sentinel range for primitive entries: UINT64_MAX - kind
+    constexpr uint64_t kPrimBase = UINT64_MAX - 256;
+    constexpr uint64_t kNoSelection = UINT64_MAX;
+    currentId = kNoSelection;
+
+    if (target == EditTarget::ArrayElementType) {
+        // Primitive types (unique synthetic id per kind)
+        for (const auto& m : kKindMeta) {
+            if (m.kind == NodeKind::Struct || m.kind == NodeKind::Array
+                || m.kind == NodeKind::Padding) continue;
+            TypeEntry e;
+            e.id = kPrimBase - (uint64_t)m.kind;
+            e.displayName = QString::fromLatin1(m.typeName);
+            entries.append(e);
+            if (m.kind == node.elementKind)
+                currentId = e.id;
+        }
+        // Struct types
+        for (const auto& n : m_doc->tree.nodes) {
+            if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                TypeEntry e;
+                e.id = n.id;
+                e.displayName = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
+                e.classKeyword = n.resolvedClassKeyword();
+                entries.append(e);
+                if (node.elementKind == NodeKind::Struct && n.id == node.refId)
+                    currentId = n.id;
+            }
+        }
+    } else if (target == EditTarget::PointerTarget) {
+        // "void" entry
+        {
+            TypeEntry e;
+            e.id = kPrimBase;  // unique sentinel for void
+            e.displayName = QStringLiteral("void");
+            entries.append(e);
+            if (node.refId == 0) currentId = e.id;
+        }
+        // Struct types
+        for (const auto& n : m_doc->tree.nodes) {
+            if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                TypeEntry e;
+                e.id = n.id;
+                e.displayName = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
+                e.classKeyword = n.resolvedClassKeyword();
+                entries.append(e);
+                if (n.id == node.refId) currentId = n.id;
+            }
         }
     }
 
-    qDebug() << "[AttachProcess]" << processName << "PID" << pid
-             << "base" << Qt::hex << base << "regionSize" << regionSize;
+    // Font with zoom
+    QSettings settings("ReclassX", "ReclassX");
+    QString fontName = settings.value("font", "JetBrains Mono").toString();
+    QFont font(fontName, 12);
+    font.setFixedPitch(true);
+    auto* sci = editor->scintilla();
+    int zoom = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETZOOM);
+    font.setPointSize(font.pointSize() + zoom);
 
+    auto* popup = new TypeSelectorPopup(editor);
+    popup->setFont(font);
+    popup->setTitle(target == EditTarget::ArrayElementType
+                    ? QStringLiteral("Choose element type")
+                    : QStringLiteral("Choose pointer target"));
+    popup->setTypes(entries, currentId);
+
+    connect(popup, &TypeSelectorPopup::typeSelected,
+            this, [this, target, nodeIdx](uint64_t id, const QString& displayName) {
+        applyTypePickerResult(target, nodeIdx, id, displayName);
+    });
+    connect(popup, &TypeSelectorPopup::createNewTypeRequested,
+            this, [this, target, nodeIdx]() {
+        Node n;
+        n.kind = NodeKind::Struct;
+        n.name = QString();
+        n.parentId = 0;
+        n.offset = 0;
+        n.id = m_doc->tree.reserveId();
+        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n}));
+        applyTypePickerResult(target, nodeIdx, n.id, QString());
+    });
+    connect(popup, &TypeSelectorPopup::dismissed,
+            popup, &QObject::deleteLater);
+
+    popup->popup(globalPos);
+}
+
+void RcxController::applyTypePickerResult(EditTarget target, int nodeIdx,
+                                          uint64_t selectedId, const QString& displayName) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    const Node& node = m_doc->tree.nodes[nodeIdx];
+
+    constexpr uint64_t kPrimBase = UINT64_MAX - 256;
+
+    if (target == EditTarget::ArrayElementType) {
+        if (selectedId >= kPrimBase) {
+            // Primitive type — resolve from displayName
+            bool ok;
+            NodeKind elemKind = kindFromTypeName(displayName, &ok);
+            if (ok && elemKind != node.elementKind) {
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::ChangeArrayMeta{node.id,
+                        node.elementKind, elemKind,
+                        node.arrayLen, node.arrayLen}));
+            }
+        } else {
+            // Struct type — real node id
+            if (node.elementKind != NodeKind::Struct || node.refId != selectedId) {
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::ChangeArrayMeta{node.id,
+                        node.elementKind, NodeKind::Struct,
+                        node.arrayLen, node.arrayLen}));
+                if (node.refId != selectedId) {
+                    m_doc->undoStack.push(new RcxCommand(this,
+                        cmd::ChangePointerRef{node.id, node.refId, selectedId}));
+                }
+            }
+        }
+    } else if (target == EditTarget::PointerTarget) {
+        // Map void sentinel back to refId 0
+        uint64_t realRefId = (selectedId >= kPrimBase) ? 0 : selectedId;
+        if (realRefId != node.refId) {
+            m_doc->undoStack.push(new RcxCommand(this,
+                cmd::ChangePointerRef{node.id, node.refId, realRefId}));
+        }
+    }
+    refresh();
+}
+
+void RcxController::attachViaPlugin(const QString& providerIdentifier, const QString& target) {
+    const auto* info = ProviderRegistry::instance().findProvider(providerIdentifier);
+    if (!info || !info->plugin) {
+        QMessageBox::warning(qobject_cast<QWidget*>(parent()),
+            "Provider Error",
+            QString("Provider '%1' not found. Is the plugin loaded?").arg(providerIdentifier));
+        return;
+    }
+
+    QString errorMsg;
+    auto provider = info->plugin->createProvider(target, &errorMsg);
+    if (!provider) {
+        if (!errorMsg.isEmpty())
+            QMessageBox::warning(qobject_cast<QWidget*>(parent()), "Provider Error", errorMsg);
+        return;
+    }
+
+    uint64_t newBase = provider->base();
     m_doc->undoStack.clear();
-    m_doc->provider = std::make_shared<ProcessProvider>(
-        hProc, base, regionSize, processName);
+    m_doc->provider = std::move(provider);
     m_doc->dataPath.clear();
-    m_doc->tree.baseAddress = base;
+    m_doc->tree.baseAddress = newBase;
     resetSnapshot();
     emit m_doc->documentChanged();
     refresh();
-#else
-    Q_UNUSED(pid); Q_UNUSED(processName);
-#endif
 }
 
 void RcxController::switchToSavedSource(int idx) {
@@ -1626,10 +1737,9 @@ void RcxController::switchToSavedSource(int idx) {
         m_doc->loadData(entry.filePath);
         m_doc->tree.baseAddress = entry.baseAddress;
         refresh();
-    } else if (entry.kind == QStringLiteral("Process")) {
-#ifdef _WIN32
-        attachToProcess(entry.pid, entry.processName);
-#endif
+    } else if (!entry.providerTarget.isEmpty()) {
+        // Plugin-based provider (e.g. "processmemory" with target "pid:name")
+        attachViaPlugin(entry.kind, entry.providerTarget);
     }
 }
 
@@ -1725,14 +1835,18 @@ void RcxController::onReadComplete() {
 
 int RcxController::computeDataExtent() const {
     // Prefer tree-based extent: exact bytes needed for rendering
-    int treeExtent = 0;
+    int64_t treeExtent = 0;
     for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+        const Node& node = m_doc->tree.nodes[i];
         int64_t off = m_doc->tree.computeOffset(i);
-        int sz = m_doc->tree.nodes[i].byteSize();
-        int end = (int)(off + sz);
+        // byteSize() returns 0 for Array-of-Struct/Array; use structSpan() for containers
+        int sz = (node.kind == NodeKind::Struct || node.kind == NodeKind::Array)
+            ? m_doc->tree.structSpan(node.id) : node.byteSize();
+        int64_t end = off + sz;
         if (end > treeExtent) treeExtent = end;
     }
-    if (treeExtent > 0) return treeExtent;
+    // Clamp to max int (readBytes takes int length)
+    if (treeExtent > 0) return (int)qMin(treeExtent, (int64_t)std::numeric_limits<int>::max());
 
     // Fallback: provider size (empty tree)
     int provSize = m_doc->provider->size();
