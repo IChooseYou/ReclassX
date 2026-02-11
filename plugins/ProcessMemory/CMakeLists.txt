@@ -4,8 +4,7 @@ project(ProcessMemoryPlugin LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find Qt
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+# Qt is found by the parent project; QT variable (Qt5 or Qt6) is inherited
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -24,7 +23,7 @@ set(PLUGIN_SOURCES
 add_library(ProcessMemoryPlugin SHARED ${PLUGIN_SOURCES})
 
 # Link Qt
-target_link_libraries(ProcessMemoryPlugin PRIVATE Qt6::Widgets)
+target_link_libraries(ProcessMemoryPlugin PRIVATE ${QT}::Widgets ${_QT_WINEXTRAS})
 
 # Platform-specific linking
 if(WIN32)

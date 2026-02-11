@@ -1,6 +1,6 @@
 #pragma once
 #include "iplugin.h"
-#include <QVector>
+#include <QList>
 #include <QString>
 #include <functional>
 
@@ -45,7 +45,7 @@ public:
     void unregisterProvider(const QString& identifier);
     
     // Get all registered providers
-    const QVector<ProviderInfo>& providers() const { return m_providers; }
+    const QList<ProviderInfo>& providers() const { return m_providers; }
     
     // Find provider by identifier
     const ProviderInfo* findProvider(const QString& identifier) const;
@@ -55,5 +55,5 @@ public:
     
 private:
     ProviderRegistry() = default;
-    QVector<ProviderInfo> m_providers;
+    QList<ProviderInfo> m_providers;
 };

@@ -36,7 +36,7 @@ void ProviderRegistry::unregisterProvider(const QString& identifier) {
     for (int i = 0; i < m_providers.size(); ++i) {
         if (m_providers[i].identifier == identifier) {
             qDebug() << "ProviderRegistry: Unregistered provider:" << identifier;
-            m_providers.remove(i);
+            m_providers.removeAt(i);
             return;
         }
     }

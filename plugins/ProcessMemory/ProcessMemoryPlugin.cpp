@@ -10,6 +10,9 @@
 #include <QImage>
 #include <QDir>
 #include <QFileInfo>
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0) && defined(_WIN32)
+#include <QtWin>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -470,7 +473,11 @@ QVector<PluginProcessInfo> ProcessMemoryPlugin::enumerateProcesses()
                     SHFILEINFOW sfi = {};
                     if (SHGetFileInfoW(path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
                         if (sfi.hIcon) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                             QPixmap pixmap = QPixmap::fromImage(QImage::fromHICON(sfi.hIcon));
+#else
+                            QPixmap pixmap = QtWin::fromHICON(sfi.hIcon);
+#endif
                             info.icon = QIcon(pixmap);
                             DestroyIcon(sfi.hIcon);
                         }

@@ -59,7 +59,7 @@ static QString crumbFor(const rcx::NodeTree& t, uint64_t nodeId) {
     }
     std::reverse(parts.begin(), parts.end());
     if (parts.size() > 4)
-        parts = {parts.front(), QStringLiteral("\u2026"), parts[parts.size() - 2], parts.back()};
+        parts = QStringList{parts.front(), QStringLiteral("\u2026"), parts[parts.size() - 2], parts.back()};
     return parts.join(QStringLiteral(" \u00B7 "));
 }
 
@@ -873,7 +873,7 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
         } else if constexpr (std::is_same_v<T, cmd::WriteBytes>) {
             const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
             if (!m_doc->provider->writeBytes(c.addr, bytes))
-                qWarning() << "WriteBytes failed at address" << Qt::hex << c.addr;
+                qWarning() << "WriteBytes failed at address" << QString::number(c.addr, 16);
             // Patch snapshot so compose sees the new value immediately
             if (m_snapshotProv)
                 m_snapshotProv->patchSnapshot(c.addr, bytes.constData(), bytes.size());

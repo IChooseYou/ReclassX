@@ -80,7 +80,7 @@ bool PluginManager::LoadPlugin(const QString& path)
         return false;
     }
     
-    qDebug() << "PluginManager: Loaded plugin:" << plugin->Name() << plugin->Version() << "by" << plugin->Author();
+    qDebug() << "PluginManager: Loaded plugin:" << plugin->Name().c_str() << plugin->Version().c_str() << "by" << plugin->Author().c_str();
     
     // Store plugin entry
     m_entries.append({library, plugin});

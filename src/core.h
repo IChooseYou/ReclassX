@@ -31,6 +31,12 @@ enum class NodeKind : uint8_t {
     Struct, Array
 };
 
+} // namespace rcx (temporarily close for qHash)
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+inline uint qHash(rcx::NodeKind key, uint seed = 0) { return ::qHash(static_cast<uint8_t>(key), seed); }
+#endif
+namespace rcx { // reopen
+
 // ── Kind flags (replaces repeated Hex/Padding switches) ──
 
 enum KindFlags : uint32_t {

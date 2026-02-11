@@ -46,8 +46,21 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <dwmapi.h>
 #include <dbghelp.h>
 #include <cstdio>
+
+static void setDarkTitleBar(QWidget* widget) {
+    // Requires Windows 10 1809+ (build 17763)
+    auto hwnd = reinterpret_cast<HWND>(widget->winId());
+    BOOL dark = TRUE;
+    // Attribute 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (build 18985+), 19 for older
+    DWORD attr = 20;
+    if (FAILED(DwmSetWindowAttribute(hwnd, attr, &dark, sizeof(dark)))) {
+        attr = 19;
+        DwmSetWindowAttribute(hwnd, attr, &dark, sizeof(dark));
+    }
+}
 
 static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
     fprintf(stderr, "\n=== UNHANDLED EXCEPTION ===\n");
@@ -117,6 +130,22 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 #endif
+
+class DarkApp : public QApplication {
+public:
+    using QApplication::QApplication;
+    bool notify(QObject* receiver, QEvent* event) override {
+        if (event->type() == QEvent::WindowActivate && receiver->isWidgetType()) {
+            auto* w = static_cast<QWidget*>(receiver);
+            if ((w->windowFlags() & Qt::Window) == Qt::Window
+                && !w->property("DarkTitleBar").toBool()) {
+                w->setProperty("DarkTitleBar", true);
+                setDarkTitleBar(w);
+            }
+        }
+        return QApplication::notify(receiver, event);
+    }
+};
 
 class MenuBarStyle : public QProxyStyle {
 public:
@@ -240,23 +269,23 @@ QIcon MainWindow::makeIcon(const QString& svgPath) {
 void MainWindow::createMenus() {
     // File
     auto* file = menuBar()->addMenu("&File");
-    file->addAction("&New", QKeySequence::New, this, &MainWindow::newDocument);
-    file->addAction("New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::newFile);
-    file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", QKeySequence::Open, this, &MainWindow::openFile);
+    file->addAction("&New", this, &MainWindow::newDocument, QKeySequence::New);
+    file->addAction("New &Tab", this, &MainWindow::newFile, QKeySequence(Qt::CTRL | Qt::Key_T));
+    file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", this, &MainWindow::openFile, QKeySequence::Open);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
-    file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
+    file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", this, &MainWindow::saveFile, QKeySequence::Save);
+    file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", this, &MainWindow::saveFileAs, QKeySequence::SaveAs);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
     m_mcpAction = file->addAction("Stop &MCP Server", this, &MainWindow::toggleMcp);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", QKeySequence(Qt::Key_Close), this, &QMainWindow::close);
+    file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", this, &QMainWindow::close, QKeySequence(Qt::Key_Close));
 
     // Edit
     auto* edit = menuBar()->addMenu("&Edit");
-    edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
-    edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
+    edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", this, &MainWindow::undo, QKeySequence::Undo);
+    edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", this, &MainWindow::redo, QKeySequence::Redo);
     edit->addSeparator();
     edit->addAction("&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
 
@@ -305,10 +334,10 @@ void MainWindow::createMenus() {
 
     // Node
     auto* node = menuBar()->addMenu("&Node");
-    node->addAction(makeIcon(":/vsicons/add.svg"), "&Add Field", QKeySequence(Qt::Key_Insert), this, &MainWindow::addNode);
-    node->addAction(makeIcon(":/vsicons/remove.svg"), "&Remove Field", QKeySequence::Delete, this, &MainWindow::removeNode);
-    node->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "Change &Type", QKeySequence(Qt::Key_T), this, &MainWindow::changeNodeType);
-    node->addAction(makeIcon(":/vsicons/edit.svg"), "Re&name", QKeySequence(Qt::Key_F2), this, &MainWindow::renameNodeAction);
+    node->addAction(makeIcon(":/vsicons/add.svg"), "&Add Field", this, &MainWindow::addNode, QKeySequence(Qt::Key_Insert));
+    node->addAction(makeIcon(":/vsicons/remove.svg"), "&Remove Field", this, &MainWindow::removeNode, QKeySequence::Delete);
+    node->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "Change &Type", this, &MainWindow::changeNodeType, QKeySequence(Qt::Key_T));
+    node->addAction(makeIcon(":/vsicons/edit.svg"), "Re&name", this, &MainWindow::renameNodeAction, QKeySequence(Qt::Key_F2));
     node->addAction(makeIcon(":/vsicons/files.svg"), "D&uplicate", this, &MainWindow::duplicateNodeAction)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
 
     // Plugins
@@ -660,7 +689,11 @@ void MainWindow::removeNode() {
     if (!primary || primary->isEditing()) return;
     QSet<int> indices = primary->selectedNodeIndices();
     if (indices.size() > 1) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         ctrl->batchRemoveNodes(indices.values());
+#else
+        ctrl->batchRemoveNodes(indices.values().toVector());
+#endif
     } else if (indices.size() == 1) {
         ctrl->removeNode(*indices.begin());
     }
@@ -1356,7 +1389,7 @@ int main(int argc, char* argv[]) {
     SetUnhandledExceptionFilter(crashHandler);
 #endif
 
-    QApplication app(argc, argv);
+    DarkApp app(argc, argv);
     app.setApplicationName("ReclassX");
     app.setOrganizationName("ReclassX");
     app.setStyle("Fusion"); // Fusion style respects dark palette well

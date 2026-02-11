@@ -47,7 +47,11 @@ int main(int argc, char* argv[]) {
         app.quit();
     });
 
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
     QObject::connect(socket, &QLocalSocket::errorOccurred, [&](QLocalSocket::LocalSocketError err) {
+#else
+    QObject::connect(socket, QOverload<QLocalSocket::LocalSocketError>::of(&QLocalSocket::error), [&](QLocalSocket::LocalSocketError err) {
+#endif
         fprintf(stderr, "[rcx-mcp-stdio] Socket error %d: %s\n",
                 (int)err, socket->errorString().toUtf8().constData());
         app.quit();

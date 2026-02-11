@@ -1,14 +1,15 @@
 #include <QTest>
 #ifdef _WIN32
 #include "providers/process_provider.h"
-
 using namespace rcx;
+#endif
 
 class TestProcessProviderSymbol : public QObject {
     Q_OBJECT
 
 private slots:
 
+#ifdef _WIN32
     void getSymbol_selfProcess() {
         // Attach to our own process for testing
         HANDLE self = GetCurrentProcess();
@@ -87,19 +88,10 @@ private slots:
         QString sym = prov.getSymbol(ntdllBase);
         QVERIFY(sym.toLower().startsWith("ntdll.dll+0x"));
     }
-};
-
-QTEST_MAIN(TestProcessProviderSymbol)
-#include "test_provider_getSymbol.moc"
-
 #else
-// Non-Windows: empty test that passes
-#include <QTest>
-class TestProcessProviderSymbol : public QObject {
-    Q_OBJECT
-private slots:
     void skip() { QSKIP("ProcessProvider tests are Windows-only"); }
+#endif
 };
+
 QTEST_MAIN(TestProcessProviderSymbol)
 #include "test_provider_getSymbol.moc"
-#endif

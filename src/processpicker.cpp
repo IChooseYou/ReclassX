@@ -11,6 +11,9 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <shellapi.h>
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#include <QtWin>
+#endif
 #elif defined(__linux__)
 #include <QDir>
 #include <QStyle>
@@ -142,7 +145,11 @@ void ProcessPicker::enumerateProcesses()
                     SHFILEINFOW sfi = {};
                     if (SHGetFileInfoW(path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
                         if (sfi.hIcon) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                             info.icon = QIcon(QPixmap::fromImage(QImage::fromHICON(sfi.hIcon)));
+#else
+                            info.icon = QIcon(QtWin::fromHICON(sfi.hIcon));
+#endif
                             DestroyIcon(sfi.hIcon);
                         }
                     }
