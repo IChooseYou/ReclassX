@@ -317,27 +317,27 @@
             "strLen": 64
         },
         {
-            "arrayLen": 1,
+            "arrayLen": 4,
             "collapsed": false,
-            "elementKind": "UInt8",
+            "elementKind": "Float",
             "id": "27",
-            "kind": "Hex64",
-            "name": "field_70",
+            "kind": "Array",
+            "name": "scores",
             "offset": 112,
             "parentId": "1",
             "refId": "0",
             "strLen": 64
         },
         {
-            "arrayLen": 1,
+            "arrayLen": 2,
             "collapsed": false,
-            "elementKind": "UInt8",
+            "elementKind": "Struct",
             "id": "28",
-            "kind": "Hex64",
-            "name": "field_78",
-            "offset": 120,
+            "kind": "Array",
+            "name": "materials",
+            "offset": 128,
             "parentId": "1",
-            "refId": "0",
+            "refId": "20",
             "strLen": 64
         }
     ]

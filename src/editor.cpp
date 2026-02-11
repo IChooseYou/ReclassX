@@ -466,6 +466,10 @@ void RcxEditor::fillIndicatorCols(int indic, int line, int colA, int colB) {
 void RcxEditor::applyHexDimming(const QVector<LineMeta>& meta) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_HEX_DIM);
     for (int i = 0; i < meta.size(); i++) {
+        // Dim fold arrows (▸/▾) on fold head lines
+        if (meta[i].foldHead && meta[i].lineKind != LineKind::CommandRow)
+            fillIndicatorCols(IND_HEX_DIM, i, 0, kFoldCol);
+
         if (isHexPreview(meta[i].nodeKind)) {
             long pos, len; lineRangeNoEol(m_sci, i, pos, len);
             if (len > 0)
@@ -979,7 +983,7 @@ RcxEditor::HitInfo RcxEditor::hitTest(const QPoint& vp) const {
 
     if (h.line >= 0 && h.line < m_meta.size()) {
         h.nodeId = m_meta[h.line].nodeId;
-        h.inFoldCol = (h.col >= 0 && h.col < kFoldCol && m_meta[h.line].foldHead);
+        h.inFoldCol = (h.col >= 0 && h.col < kFoldCol + 1 && m_meta[h.line].foldHead);
     }
     return h;
 }
@@ -1044,11 +1048,12 @@ static bool hitTestTarget(QsciScintilla* sci,
     }
 
     // Array headers: check element type and count sub-spans first
+    // Count click area includes brackets [N] so clicking [ or ] edits the count
     if (lm.isArrayHeader) {
+        ColumnSpan elemCountClick = arrayElemCountClickSpanFor(lm, lineText);
         ColumnSpan elemType = arrayElemTypeSpanFor(lm, lineText);
-        ColumnSpan elemCount = arrayElemCountSpanFor(lm, lineText);
-        if (inSpan(elemCount)) { outTarget = EditTarget::ArrayElementCount; outLine = line; return true; }
-        if (inSpan(elemType))  { outTarget = EditTarget::ArrayElementType; outLine = line; return true; }
+        if (inSpan(elemCountClick)) { outTarget = EditTarget::ArrayElementCount; outLine = line; return true; }
+        if (inSpan(elemType))       { outTarget = EditTarget::ArrayElementType; outLine = line; return true; }
     }
 
     // Fallback spans for header lines
@@ -1065,6 +1070,26 @@ static bool hitTestTarget(QsciScintilla* sci,
     else if (inSpan(vs)) outTarget = EditTarget::Value;
     else return false;
 
+    // Array headers: redirect generic Type hit to ArrayElementType (uses popup, not inline edit)
+    if (lm.isArrayHeader && outTarget == EditTarget::Type) {
+        outTarget = EditTarget::ArrayElementType;
+        outLine = line;
+        return true;
+    }
+    // Array element lines: type/name click opens element type picker on the parent array header
+    if (lm.isArrayElement && (outTarget == EditTarget::Type || outTarget == EditTarget::Name)) {
+        outTarget = EditTarget::ArrayElementType;
+        // Find the array header line (previous line with isArrayHeader and same nodeIdx)
+        for (int l = line - 1; l >= 0; l--) {
+            if (l >= meta.size()) continue;
+            const LineMeta& hdr = meta[l];
+            if (hdr.isArrayHeader && hdr.nodeIdx == lm.nodeIdx) {
+                outLine = l;
+                return true;
+            }
+        }
+        return false;
+    }
     // Padding nodes: hex bytes are display-only, not editable
     if (outTarget == EditTarget::Value && lm.nodeKind == NodeKind::Padding)
         return false;
@@ -1446,6 +1471,24 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
 
 bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     if (target == EditTarget::TypeSelector) return false;  // handled by popup, not inline edit
+
+    // Array element type and pointer target: handled by TypeSelectorPopup, not inline edit
+    if (target == EditTarget::ArrayElementType || target == EditTarget::PointerTarget) {
+        if (line < 0) {
+            int col;
+            m_sci->getCursorPosition(&line, &col);
+        }
+        auto* lm = metaForLine(line);
+        if (!lm) return false;
+        long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)line);
+        int lineH = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT, (unsigned long)line);
+        int x = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION, (unsigned long)0, lineStart);
+        int y = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION, (unsigned long)0, lineStart);
+        QPoint pos = m_sci->viewport()->mapToGlobal(QPoint(x, y + lineH));
+        emit typePickerRequested(target, lm->nodeIdx, pos);
+        return true;
+    }
+
     if (m_editState.active) return false;
     m_hoveredNodeId = 0;
     m_hoveredLine = -1;
@@ -1759,7 +1802,6 @@ void RcxEditor::showSourcePicker() {
     menuFont.setPointSize(menuFont.pointSize() + zoom);
     menu.setFont(menuFont);
     menu.addAction("file");
-    menu.addAction("process");
 
     // Add all registered providers from global registry
     const auto& providers = ProviderRegistry::instance().providers();
@@ -2013,6 +2055,12 @@ void RcxEditor::applyHoverCursor() {
             fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
             m_hoverSpanLines.append(line);
         }
+    }
+
+    // Apply hover span on fold arrows (▸/▾) — same visual feedback as editable tokens
+    if (h.inFoldCol && h.line >= 0 && h.line < m_meta.size()) {
+        fillIndicatorCols(IND_HOVER_SPAN, h.line, 0, kFoldCol);
+        m_hoverSpanLines.append(h.line);
     }
 
     // Determine cursor shape based on interaction type

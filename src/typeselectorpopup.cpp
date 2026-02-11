@@ -58,10 +58,14 @@ public:
         }
         x += 18;
 
-        // Icon 16x16
-        static QIcon structIcon(QStringLiteral(":/vsicons/symbol-structure.svg"));
-        structIcon.paint(painter, x, y + (h - 16) / 2, 16, 16);
-        x += 20;
+        // Icon 16x16 — only for struct/class/enum entries (non-empty classKeyword)
+        bool hasIcon = (m_filtered && row >= 0 && row < m_filtered->size()
+                        && !(*m_filtered)[row].classKeyword.isEmpty());
+        if (hasIcon) {
+            static QIcon structIcon(QStringLiteral(":/vsicons/symbol-structure.svg"));
+            structIcon.paint(painter, x, y + (h - 16) / 2, 16, 16);
+        }
+        x += 20;  // reserve space for alignment
 
         // Text
         painter->setPen(option.state & QStyle::State_Selected
@@ -122,7 +126,7 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
     {
         auto* row = new QHBoxLayout;
         row->setContentsMargins(0, 0, 0, 0);
-        m_titleLabel = new QLabel(QStringLiteral("View as type"));
+        m_titleLabel = new QLabel(QStringLiteral("Change root"));
         m_titleLabel->setPalette(pal);
         QFont bold = m_titleLabel->font();
         bold.setBold(true);
@@ -236,7 +240,7 @@ void TypeSelectorPopup::setTypes(const QVector<TypeEntry>& types, uint64_t curre
 void TypeSelectorPopup::popup(const QPoint& globalPos) {
     // Size: width based on longest entry, height based on count
     QFontMetrics fm(m_font);
-    int maxTextW = fm.horizontalAdvance(QStringLiteral("View as type      Esc"));
+    int maxTextW = fm.horizontalAdvance(QStringLiteral("Choose element type      Esc"));
     for (const auto& t : m_allTypes) {
         QString text = t.classKeyword + QStringLiteral(" ") + t.displayName;
         int w = 18 + 20 + fm.horizontalAdvance(text) + 16;  // gutter + icon + text + pad
@@ -283,7 +287,10 @@ void TypeSelectorPopup::applyFilter(const QString& text) {
             || t.displayName.contains(text, Qt::CaseInsensitive)
             || t.classKeyword.contains(text, Qt::CaseInsensitive)) {
             m_filteredTypes.append(t);
-            displayStrings << (t.classKeyword + QStringLiteral(" ") + t.displayName);
+            if (t.classKeyword.isEmpty())
+                displayStrings << t.displayName;
+            else
+                displayStrings << (t.classKeyword + QStringLiteral(" ") + t.displayName);
         }
     }
 
@@ -305,9 +312,13 @@ void TypeSelectorPopup::acceptCurrent() {
         acceptIndex(idx.row());
 }
 
+void TypeSelectorPopup::setTitle(const QString& title) {
+    m_titleLabel->setText(title);
+}
+
 void TypeSelectorPopup::acceptIndex(int row) {
     if (row < 0 || row >= m_filteredTypes.size()) return;
-    emit typeSelected(m_filteredTypes[row].id);
+    emit typeSelected(m_filteredTypes[row].id, m_filteredTypes[row].displayName);
     hide();
 }
 

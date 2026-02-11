@@ -65,6 +65,7 @@ signals:
                              EditTarget target, const QString& text);
     void inlineEditCancelled();
     void typeSelectorRequested();
+    void typePickerRequested(EditTarget target, int nodeIdx, QPoint globalPos);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;

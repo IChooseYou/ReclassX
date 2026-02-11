@@ -732,7 +732,7 @@ private slots:
     }
 
     void testArrayHeaderCharTypes() {
-        // UInt8 array → "char[N]", UInt16 → "wchar_t[N]"
+        // UInt8 array → "uint8_t[N]", UInt16 → "uint16_t[N]"
         NodeTree tree;
         tree.baseAddress = 0;
 
@@ -769,11 +769,11 @@ private slots:
         for (int i = 0; i < result.meta.size(); i++) {
             if (!result.meta[i].isArrayHeader) continue;
             QString text = lines[i];
-            if (text.contains("char[64]")) foundChar = true;
-            if (text.contains("wchar_t[32]")) foundWchar = true;
+            if (text.contains("uint8_t[64]")) foundChar = true;
+            if (text.contains("uint16_t[32]")) foundWchar = true;
         }
-        QVERIFY2(foundChar, "Should have 'char[64]' header");
-        QVERIFY2(foundWchar, "Should have 'wchar_t[32]' header");
+        QVERIFY2(foundChar, "Should have 'uint8_t[64]' header");
+        QVERIFY2(foundWchar, "Should have 'uint16_t[32]' header");
     }
 
     void testArraySpansClickable() {
@@ -995,13 +995,13 @@ private slots:
         ComposeResult r2 = compose(tree, prov);
         QStringList lines2 = r2.text.split('\n');
         bool found42 = false;
-        bool still10 = false;
-        for (const QString& l : lines2) {
-            if (l.contains("[42]")) found42 = true;
-            if (l.contains("[10]")) still10 = true;
+        bool still10Header = false;
+        for (int i = 0; i < r2.meta.size(); i++) {
+            if (r2.meta[i].isArrayHeader && lines2[i].contains("uint8_t[42]")) found42 = true;
+            if (r2.meta[i].isArrayHeader && lines2[i].contains("uint8_t[10]")) still10Header = true;
         }
-        QVERIFY2(found42, "Recomposed text should show [42]");
-        QVERIFY2(!still10, "Recomposed text should NOT still show [10]");
+        QVERIFY2(found42, "Recomposed header should show uint8_t[42]");
+        QVERIFY2(!still10Header, "Recomposed header should NOT still show uint8_t[10]");
 
         // Spans must still work after recompose
         int headerLine = -1;
@@ -1013,6 +1013,161 @@ private slots:
         QVERIFY2(countSpan.valid, "Count span must be valid after recompose");
         QString countText = lines2[headerLine].mid(countSpan.start, countSpan.end - countSpan.start);
         QCOMPARE(countText, QString("42"));
+    }
+
+    void testPrimitiveArrayElements() {
+        // Expanded primitive array should synthesize element lines dynamically
+        NodeTree tree;
+        tree.baseAddress = 0x1000;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "values";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::UInt32;
+        arr.arrayLen = 4;
+        tree.addNode(arr);
+
+        // Buffer with known values: 0x11, 0x22, 0x33, 0x44
+        QByteArray data(64, '\0');
+        uint32_t v0 = 0x11, v1 = 0x22, v2 = 0x33, v3 = 0x44;
+        memcpy(data.data() + 0, &v0, 4);
+        memcpy(data.data() + 4, &v1, 4);
+        memcpy(data.data() + 8, &v2, 4);
+        memcpy(data.data() + 12, &v3, 4);
+        BufferProvider prov(data);
+
+        ComposeResult result = compose(tree, prov);
+        QStringList lines = result.text.split('\n');
+
+        // Find array header
+        int headerLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].isArrayHeader) { headerLine = i; break; }
+        }
+        QVERIFY2(headerLine >= 0, "Array header must exist");
+        QVERIFY2(lines[headerLine].contains("uint32_t[4]"),
+                 qPrintable("Header should contain 'uint32_t[4]': " + lines[headerLine]));
+
+        // Count element field lines (depth >= 2, lineKind == Field)
+        int elemCount = 0;
+        bool found0 = false, found3 = false;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::Field && result.meta[i].depth >= 2) {
+                elemCount++;
+                // Type column should have combined type+index: "uint32_t[0]"
+                if (lines[i].contains("uint32_t[0]")) found0 = true;
+                if (lines[i].contains("uint32_t[3]")) found3 = true;
+                // isArrayElement flag must be set
+                QVERIFY2(result.meta[i].isArrayElement,
+                         qPrintable("Element line must have isArrayElement=true: " + lines[i]));
+            }
+        }
+        QCOMPARE(elemCount, 4);
+        QVERIFY2(found0, "Should have uint32_t[0] element");
+        QVERIFY2(found3, "Should have uint32_t[3] element");
+
+        // Check footer exists
+        bool hasFooter = false;
+        for (int i = headerLine + 1; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::Footer && result.meta[i].nodeKind == NodeKind::Array) {
+                hasFooter = true;
+                break;
+            }
+        }
+        QVERIFY2(hasFooter, "Array should have footer line");
+    }
+
+    void testPrimitiveArrayCollapsed() {
+        // Collapsed primitive array should show NO element lines
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "data";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::UInt16;
+        arr.arrayLen = 8;
+        arr.collapsed = true;
+        tree.addNode(arr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // No field lines at depth >= 2 (no synthesized elements)
+        int elemFields = 0;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::Field && result.meta[i].depth >= 2)
+                elemFields++;
+        }
+        QCOMPARE(elemFields, 0);
+    }
+
+    void testStructArrayStillUsesChildren() {
+        // Struct array with manual children should still render child nodes, not synthesize
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "items";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::Struct;
+        arr.arrayLen = 1;
+        int ai = tree.addNode(arr);
+        uint64_t arrId = tree.nodes[ai].id;
+
+        // One struct child
+        Node elem;
+        elem.kind = NodeKind::Struct;
+        elem.name = "Item";
+        elem.parentId = arrId;
+        elem.offset = 0;
+        int ei = tree.addNode(elem);
+        uint64_t elemId = tree.nodes[ei].id;
+
+        Node field;
+        field.kind = NodeKind::UInt32;
+        field.name = "val";
+        field.parentId = elemId;
+        field.offset = 0;
+        tree.addNode(field);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Should have the child struct's field rendered
+        bool hasVal = false;
+        QStringList lines = result.text.split('\n');
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines[i].contains("val")) { hasVal = true; break; }
+        }
+        QVERIFY2(hasVal, "Struct array child field 'val' should be rendered");
     }
 
     // ═════════════════════════════════════════════════════════════

@@ -597,8 +597,12 @@ static void buildBallDemo(NodeTree& tree) {
 
     // Pointer to Material in Ball struct
     { Node n; n.kind = NodeKind::Pointer64; n.name = "material"; n.parentId = ballId; n.offset = 104; n.refId = matId; n.collapsed = true; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_70";   n.parentId = ballId; n.offset = 112; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_78";   n.parentId = ballId; n.offset = 120; tree.addNode(n); }
+
+    // float[4] scores at offset 112
+    { Node n; n.kind = NodeKind::Array; n.name = "scores"; n.parentId = ballId; n.offset = 112; n.elementKind = NodeKind::Float; n.arrayLen = 4; tree.addNode(n); }
+
+    // Material[2] materials at offset 128 (112 + 16 for float[4])
+    { Node n; n.kind = NodeKind::Array; n.name = "materials"; n.parentId = ballId; n.offset = 128; n.elementKind = NodeKind::Struct; n.arrayLen = 2; n.refId = matId; tree.addNode(n); }
 }
 
 void MainWindow::newFile() {

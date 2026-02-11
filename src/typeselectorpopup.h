@@ -25,11 +25,12 @@ public:
     explicit TypeSelectorPopup(QWidget* parent = nullptr);
 
     void setFont(const QFont& font);
+    void setTitle(const QString& title);
     void setTypes(const QVector<TypeEntry>& types, uint64_t currentId);
     void popup(const QPoint& globalPos);
 
 signals:
-    void typeSelected(uint64_t structId);
+    void typeSelected(uint64_t id, const QString& displayName);
     void createNewTypeRequested();
     void dismissed();
 

@@ -650,7 +650,7 @@ inline ColumnSpan commandRowRootNameSpan(const QString& lineText) {
 inline ColumnSpan commandRowChevronSpan(const QString& lineText) {
     if (lineText.size() < 3) return {};
     if (lineText[0] == '[' && lineText[1] == QChar(0x25B8) && lineText[2] == ']')
-        return {0, 3, true};
+        return {0, qMin(4, (int)lineText.size()), true};  // include trailing space for easier clicking
     return {};
 }
 

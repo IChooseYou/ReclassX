@@ -61,11 +61,10 @@ private:
 // ── Saved source entry ──
 
 struct SavedSourceEntry {
-    QString kind;          // "File" or "Process"
+    QString kind;          // "File" or provider identifier (e.g. "processmemory")
     QString displayName;   // filename or process name
     QString filePath;      // for File sources
-    uint32_t pid = 0;      // for Process sources
-    QString processName;   // for Process sources
+    QString providerTarget; // for plugin providers (e.g. "pid:name")
     uint64_t baseAddress = 0;
 };
 
@@ -112,7 +111,7 @@ public:
 
     // MCP bridge accessors
     void setSuppressRefresh(bool v) { m_suppressRefresh = v; }
-    void attachToProcess(uint32_t pid, const QString& processName);
+    void attachViaPlugin(const QString& providerIdentifier, const QString& target);
     const QVector<SavedSourceEntry>& savedSources() const { return m_savedSources; }
     int activeSourceIndex() const { return m_activeSourceIdx; }
     void switchSource(int idx) { switchToSavedSource(idx); }
@@ -151,6 +150,8 @@ private:
     void switchToSavedSource(int idx);
     void pushSavedSourcesToEditors();
     void showTypeSelectorPopup(RcxEditor* editor);
+    void showTypePickerPopup(RcxEditor* editor, EditTarget target, int nodeIdx, QPoint globalPos);
+    void applyTypePickerResult(EditTarget target, int nodeIdx, uint64_t selectedId, const QString& displayName);
 
     // ── Auto-refresh methods ──
     void setupAutoRefresh();

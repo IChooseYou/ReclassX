@@ -16,6 +16,8 @@ if(NOT QT_FOUND)
     find_package(Qt5 REQUIRED COMPONENTS ${_QT_COMPONENTS})
     set(QT_VERSION_MAJOR 5)
 endif()
+# The NAMES variant only detects the version; load the actual component targets
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS ${_QT_COMPONENTS})
 set(QT Qt${QT_VERSION_MAJOR})
 message(STATUS "Using ${QT}: ${${QT}_DIR}")
 
@@ -44,7 +46,7 @@ add_executable(ReclassX
     src/resources.qrc
     src/core.h
     src/workspace_model.h
-    src/providers/buffer_provider.h src/providers/null_provider.h src/providers/process_provider.h src/providers/provider.h src/providers/snapshot_provider.h
+    src/providers/buffer_provider.h src/providers/null_provider.h src/providers/provider.h src/providers/snapshot_provider.h
     src/providerregistry.cpp
     src/providerregistry.h
     src/pluginmanager.cpp
@@ -153,15 +155,6 @@ if(BUILD_TESTING)
     target_include_directories(test_command_row PRIVATE src)
     target_link_libraries(test_command_row PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_command_row COMMAND test_command_row)
-
-    add_executable(test_provider_getSymbol tests/test_provider_getSymbol.cpp)
-    target_include_directories(test_provider_getSymbol PRIVATE src)
-    target_link_libraries(test_provider_getSymbol PRIVATE ${QT}::Core ${QT}::Test)
-    if(WIN32)
-        target_compile_definitions(test_provider_getSymbol PRIVATE _WIN32)
-        target_link_libraries(test_provider_getSymbol PRIVATE psapi)
-    endif()
-    add_test(NAME test_provider_getSymbol COMMAND test_provider_getSymbol)
 
     add_executable(test_controller tests/test_controller.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp

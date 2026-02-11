@@ -41,13 +41,15 @@ QString typeName(NodeKind kind, int colType) {
     return fit(m ? QString::fromLatin1(m->typeName) : QStringLiteral("???"), colType);
 }
 
-// Array type string: "uint32_t[16]" or "char[64]"
-QString arrayTypeName(NodeKind elemKind, int count) {
-    auto* m = kindMeta(elemKind);
-    QString elem = m ? QString::fromLatin1(m->typeName) : QStringLiteral("???");
-    // char[] for UInt8, wchar_t[] for UInt16
-    if (elemKind == NodeKind::UInt8) elem = QStringLiteral("char");
-    else if (elemKind == NodeKind::UInt16) elem = QStringLiteral("wchar_t");
+// Array type string: "uint32_t[16]" or "Material[2]"
+QString arrayTypeName(NodeKind elemKind, int count, const QString& structName) {
+    QString elem;
+    if (elemKind == NodeKind::Struct && !structName.isEmpty())
+        elem = structName;
+    else {
+        auto* m = kindMeta(elemKind);
+        elem = m ? QString::fromLatin1(m->typeName) : QStringLiteral("???");
+    }
     return elem + QStringLiteral("[") + QString::number(count) + QStringLiteral("]");
 }
 
@@ -143,9 +145,9 @@ QString fmtStructFooter(const Node& /*node*/, int depth, int /*totalSize*/) {
 
 // ── Array header ──
 // Columnar format: <type[count]> <name> { (or no brace when collapsed)
-QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collapsed, int colType, int colName) {
+QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collapsed, int colType, int colName, const QString& elemStructName) {
     QString ind = indent(depth);
-    QString type = fit(arrayTypeName(node.elementKind, node.arrayLen), colType);
+    QString type = fit(arrayTypeName(node.elementKind, node.arrayLen, elemStructName), colType);
     QString suffix = collapsed ? QString() : QStringLiteral("{");
     return ind + type + SEP + node.name + SEP + suffix;
 }

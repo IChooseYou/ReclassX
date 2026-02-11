@@ -40,7 +40,7 @@ public:
 
     // Resolve an absolute address to a symbol name.
     // Returns empty string if no symbol is known.
-    // ProcessProvider: "ntdll.dll+0x1A30"
+    // Example: "ntdll.dll+0x1A30"
     // BufferProvider: "" (no symbols in flat files)
     virtual QString getSymbol(uint64_t addr) const {
         Q_UNUSED(addr);

@@ -61,7 +61,7 @@ private slots:
         ColumnSpan span = commandRowChevronSpan(text);
         QVERIFY(span.valid);
         QCOMPARE(span.start, 0);
-        QCOMPARE(span.end, 3);
+        QCOMPARE(span.end, 4);  // includes trailing space for easier clicking
     }
 
     void testChevronSpanRejects() {
@@ -117,9 +117,10 @@ private slots:
         QSignalSpy typeSpy(&popup, &TypeSelectorPopup::typeSelected);
         QSignalSpy createSpy(&popup, &TypeSelectorPopup::createNewTypeRequested);
 
-        emit popup.typeSelected(2);
+        emit popup.typeSelected(2, QStringLiteral("B"));
         QCOMPARE(typeSpy.count(), 1);
         QCOMPARE(typeSpy.at(0).at(0).toULongLong(), (uint64_t)2);
+        QCOMPARE(typeSpy.at(0).at(1).toString(), QStringLiteral("B"));
 
         emit popup.createNewTypeRequested();
         QCOMPARE(createSpy.count(), 1);
