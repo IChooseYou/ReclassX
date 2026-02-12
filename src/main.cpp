@@ -155,7 +155,48 @@ public:
         QSize s = QProxyStyle::sizeFromContents(type, opt, sz, w);
         if (type == CT_MenuBarItem)
             s.setHeight(s.height() + qRound(s.height() * 0.5));
+        if (type == CT_MenuItem)
+            s = QSize(s.width() + 24, s.height() + 4);
         return s;
+    }
+    void drawPrimitive(PrimitiveElement elem, const QStyleOption* opt,
+                       QPainter* p, const QWidget* w) const override {
+        // Kill Fusion's 3D bevel on QMenu — the OS drop shadow is enough
+        if (elem == PE_FrameMenu)
+            return;
+        QProxyStyle::drawPrimitive(elem, opt, p, w);
+    }
+    void drawControl(ControlElement element, const QStyleOption* opt,
+                     QPainter* p, const QWidget* w) const override {
+        // Menu bar items (File, Edit, View…) — direct paint, Fusion ignores palette
+        if (element == CE_MenuBarItem) {
+            if (auto* mi = qstyleoption_cast<const QStyleOptionMenuItem*>(opt)) {
+                if (mi->state & (State_Selected | State_Sunken)) {
+                    QStyleOptionMenuItem patched = *mi;
+                    patched.state &= ~(State_Selected | State_Sunken);
+                    patched.palette.setColor(QPalette::ButtonText,
+                        mi->palette.color(QPalette::Link));          // amber text only
+                    QProxyStyle::drawControl(element, &patched, p, w);
+                    return;
+                }
+            }
+        }
+        // Popup menu items — palette patch then delegate to Fusion
+        if (element == CE_MenuItem) {
+            if (auto* mi = qstyleoption_cast<const QStyleOptionMenuItem*>(opt)) {
+                if ((mi->state & State_Selected)
+                    && mi->menuItemType != QStyleOptionMenuItem::Separator) {
+                    QStyleOptionMenuItem patched = *mi;
+                    patched.palette.setColor(QPalette::Highlight,
+                        mi->palette.color(QPalette::Mid));           // theme.border
+                    patched.palette.setColor(QPalette::HighlightedText,
+                        mi->palette.color(QPalette::Link));          // theme.indHoverSpan
+                    QProxyStyle::drawControl(element, &patched, p, w);
+                    return;
+                }
+            }
+        }
+        QProxyStyle::drawControl(element, opt, p, w);
     }
 };
 
@@ -169,32 +210,24 @@ static void applyGlobalTheme(const rcx::Theme& theme) {
     pal.setColor(QPalette::Button,          theme.button);
     pal.setColor(QPalette::ButtonText,      theme.text);
     pal.setColor(QPalette::Highlight,       theme.hover);
-    pal.setColor(QPalette::HighlightedText, theme.text);
+    pal.setColor(QPalette::HighlightedText, theme.indHoverSpan);
     pal.setColor(QPalette::ToolTipBase,     theme.backgroundAlt);
     pal.setColor(QPalette::ToolTipText,     theme.text);
     pal.setColor(QPalette::Mid,             theme.border);
     pal.setColor(QPalette::Dark,            theme.background);
     pal.setColor(QPalette::Light,           theme.textFaint);
+    pal.setColor(QPalette::Link,            theme.indHoverSpan);
+
+    // Disabled group: Fusion reads these for disabled menu items, buttons, etc.
+    pal.setColor(QPalette::Disabled, QPalette::WindowText,      theme.textMuted);
+    pal.setColor(QPalette::Disabled, QPalette::Text,            theme.textMuted);
+    pal.setColor(QPalette::Disabled, QPalette::ButtonText,      theme.textMuted);
+    pal.setColor(QPalette::Disabled, QPalette::HighlightedText, theme.textMuted);
+    pal.setColor(QPalette::Disabled, QPalette::Light,           theme.background);
+
     qApp->setPalette(pal);
 
-    qApp->setStyleSheet(QStringLiteral(
-        "QMenu {"
-        "  background-color: %1;"
-        "  color: %2;"
-        "  border: 1px solid %3;"
-        "  padding: 4px 6px;"
-        "}"
-        "QMenu::item { padding: 4px 24px; }"
-        "QMenu::item:selected { background-color: %4; }"
-        "QMenu::separator { height: 1px; background: %3; margin: 4px 8px; }"
-        "QMenu::item:disabled { color: %5; }"
-        "QToolTip {"
-        "  background-color: %1;"
-        "  color: %2;"
-        "  border: 1px solid %3;"
-        "}")
-        .arg(theme.backgroundAlt.name(), theme.text.name(), theme.border.name(),
-             theme.hover.name(), theme.textMuted.name()));
+    qApp->setStyleSheet(QString());
 }
 
 namespace rcx {
@@ -227,10 +260,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createStatusBar();
 
 
-    // Larger click targets on menu bar
-    {
-        menuBar()->setStyle(new MenuBarStyle(menuBar()->style()));
-    }
+    // MenuBarStyle is set as app style in main() — covers both QMenuBar and QMenu
 
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
             this, &MainWindow::applyTheme);
@@ -355,9 +385,11 @@ void MainWindow::createStatusBar() {
     statusBar()->addWidget(m_statusLabel, 1);
     {
         const auto& t = ThemeManager::instance().current();
-        statusBar()->setStyleSheet(QStringLiteral(
-            "QStatusBar { background: %1; color: %2; }")
-            .arg(t.backgroundAlt.name(), t.textDim.name()));
+        QPalette sbPal = statusBar()->palette();
+        sbPal.setColor(QPalette::Window, t.background);
+        sbPal.setColor(QPalette::WindowText, t.textDim);
+        statusBar()->setPalette(sbPal);
+        statusBar()->setAutoFillBackground(true);
     }
 
     QSettings settings("ReclassX", "ReclassX");
@@ -786,8 +818,12 @@ void MainWindow::about() {
     });
     lay->addWidget(ghBtn, 0, Qt::AlignCenter);
 
-    dlg.setStyleSheet(QStringLiteral("QDialog { background: %1; }")
-        .arg(ThemeManager::instance().current().background.name()));
+    {
+        QPalette dlgPal = dlg.palette();
+        dlgPal.setColor(QPalette::Window, ThemeManager::instance().current().background);
+        dlg.setPalette(dlgPal);
+        dlg.setAutoFillBackground(true);
+    }
     dlg.exec();
 }
 
@@ -817,9 +853,12 @@ void MainWindow::applyTheme(const Theme& theme) {
              theme.backgroundAlt.name(), theme.hover.name()));
 
     // Status bar
-    statusBar()->setStyleSheet(QStringLiteral(
-        "QStatusBar { background: %1; color: %2; }")
-        .arg(theme.backgroundAlt.name(), theme.textDim.name()));
+    {
+        QPalette sbPal = statusBar()->palette();
+        sbPal.setColor(QPalette::Window, theme.background);
+        sbPal.setColor(QPalette::WindowText, theme.textDim);
+        statusBar()->setPalette(sbPal);
+    }
 
     // Split pane tab widgets
     for (auto& state : m_tabs) {
@@ -831,14 +870,21 @@ void MainWindow::applyTheme(const Theme& theme) {
 
 void MainWindow::editTheme() {
     auto& tm = ThemeManager::instance();
-    Theme edited = tm.current();
-    ThemeEditor dlg(edited, this);
+    int idx = tm.currentIndex();
+    ThemeEditor dlg(idx, this);
     if (dlg.exec() == QDialog::Accepted) {
-        edited = dlg.result();
-        int idx = tm.currentIndex();
-        if (idx < tm.themes().size() && idx >= 0) {
-            tm.updateTheme(idx, edited);
-        }
+        tm.revertPreview();
+        int selectedIdx = dlg.selectedIndex();
+        Theme edited = dlg.result();
+        // Switch to selected theme first (if changed)
+        if (selectedIdx != idx && selectedIdx >= 0 && selectedIdx < tm.themes().size())
+            tm.setCurrent(selectedIdx);
+        // Apply edits
+        int applyIdx = selectedIdx >= 0 ? selectedIdx : idx;
+        if (applyIdx >= 0 && applyIdx < tm.themes().size())
+            tm.updateTheme(applyIdx, edited);
+    } else {
+        tm.revertPreview();
     }
 }
 
@@ -870,6 +916,8 @@ void MainWindow::setEditorFont(const QString& fontName) {
         m_workspaceTree->setFont(f);
     // Sync status bar font
     statusBar()->setFont(f);
+    // Sync menu bar / menu font via global stylesheet
+    applyGlobalTheme(ThemeManager::instance().current());
 }
 
 RcxController* MainWindow::activeController() const {
@@ -1396,7 +1444,7 @@ int main(int argc, char* argv[]) {
     DarkApp app(argc, argv);
     app.setApplicationName("ReclassX");
     app.setOrganizationName("ReclassX");
-    app.setStyle("Fusion"); // Fusion style respects dark palette well
+    app.setStyle(new MenuBarStyle("Fusion")); // Fusion + generous menu sizing
 
     // Load embedded fonts
     int fontId = QFontDatabase::addApplicationFont(":/fonts/JetBrainsMono.ttf");

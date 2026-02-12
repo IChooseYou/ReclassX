@@ -5,6 +5,13 @@
 #include <QFocusEvent>
 #include <QMouseEvent>
 #include <QFile>
+#include <QMenu>
+#include <QProxyStyle>
+#include <QStyleOption>
+#include <QImage>
+#include <QPainter>
+#include <QCursor>
+#include <QScreen>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
 #include "editor.h"
@@ -473,27 +480,17 @@ private slots:
         QCOMPARE(cancelSpy.count(), 0);
     }
 
-    // ── Test: type edit begins and can be cancelled ──
+    // ── Test: type edit emits typePickerRequested (popup-based, not inline edit) ──
     void testTypeEditCancel() {
         m_editor->applyDocument(m_result);
 
-        // Begin type edit on a field line
+        QSignalSpy spy(m_editor, &RcxEditor::typePickerRequested);
+
+        // Begin type edit on a field line — now handled by TypeSelectorPopup
         bool ok = m_editor->beginInlineEdit(EditTarget::Type, kFirstDataLine);
         QVERIFY(ok);
-        QVERIFY(m_editor->isEditing());
-
-        // Process deferred events (showTypeAutocomplete is deferred via QTimer)
-        QApplication::processEvents();
-
-        // First Escape closes autocomplete popup (if active) or cancels edit
-        QKeyEvent esc1(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-        QApplication::sendEvent(m_editor->scintilla(), &esc1);
-
-        // If autocomplete was open, first Esc only closed popup; need second Esc
-        if (m_editor->isEditing()) {
-            QKeyEvent esc2(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-            QApplication::sendEvent(m_editor->scintilla(), &esc2);
-        }
+        QCOMPARE(spy.count(), 1);
+        // Type editing uses popup, not inline edit state
         QVERIFY(!m_editor->isEditing());
     }
 
@@ -523,11 +520,11 @@ private slots:
             QsciScintillaBase::SCI_GOTOLINE, (unsigned long)headerLine);
         QApplication::processEvents();
 
-        // Type edit on header should succeed
+        // Type edit on header should succeed (emits popup signal, not inline edit)
+        QSignalSpy typeSpy(m_editor, &RcxEditor::typePickerRequested);
         bool ok = m_editor->beginInlineEdit(EditTarget::Type, headerLine);
         QVERIFY(ok);
-        QVERIFY(m_editor->isEditing());
-        m_editor->cancelInlineEdit();
+        QCOMPARE(typeSpy.count(), 1);
 
         // Name edit on header should succeed
         ok = m_editor->beginInlineEdit(EditTarget::Name, headerLine);
@@ -598,35 +595,19 @@ private slots:
     void testTypeAutocompleteTypingAndCommit() {
         m_editor->applyDocument(m_result);
 
+        QSignalSpy spy(m_editor, &RcxEditor::typePickerRequested);
+
+        // Type edit now emits typePickerRequested for TypeSelectorPopup
         bool ok = m_editor->beginInlineEdit(EditTarget::Type, kFirstDataLine);
         QVERIFY(ok);
-
-        // Autocomplete is deferred via QTimer::singleShot(0) — poll until active
-        QTRY_VERIFY2(m_editor->scintilla()->SendScintilla(
-            QsciScintillaBase::SCI_AUTOCACTIVE) != 0,
-            "Autocomplete should be active");
-
-        // Simulate typing 'i' — filters to typeName entries starting with 'i'
-        QKeyEvent keyI(QEvent::KeyPress, Qt::Key_I, Qt::NoModifier, "i");
-        QApplication::sendEvent(m_editor->scintilla(), &keyI);
-
-        // Still editing
-        QVERIFY(m_editor->isEditing());
-
-        // Simulate Enter to select from autocomplete (handled synchronously)
-        QSignalSpy spy(m_editor, &RcxEditor::inlineEditCommitted);
-        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-        QApplication::sendEvent(m_editor->scintilla(), &enter);
-
-        // Should have committed immediately (no deferred timer for type edits)
         QCOMPARE(spy.count(), 1);
-        QVERIFY(!m_editor->isEditing());
 
-        // The committed text should be a valid typeName starting with 'i'
+        // Verify signal carries valid nodeIdx (second arg)
         QList<QVariant> args = spy.first();
-        QString committedText = args.at(3).toString();
-        QVERIFY2(committedText.startsWith('i'),
-                 qPrintable("Expected typeName starting with 'i', got: " + committedText));
+        QVERIFY(args.at(1).toInt() >= 0);
+
+        // No inline edit state — popup handles everything
+        QVERIFY(!m_editor->isEditing());
 
         m_editor->applyDocument(m_result);
     }
@@ -635,28 +616,15 @@ private slots:
     void testTypeEditClickAwayNoChange() {
         m_editor->applyDocument(m_result);
 
+        QSignalSpy spy(m_editor, &RcxEditor::typePickerRequested);
+
+        // Type edit emits typePickerRequested (popup handles click-away)
         bool ok = m_editor->beginInlineEdit(EditTarget::Type, kFirstDataLine);
         QVERIFY(ok);
+        QCOMPARE(spy.count(), 1);
 
-        // Process deferred autocomplete
-        QApplication::processEvents();
-
-        // Click away on viewport — should commit (not cancel)
-        QSignalSpy commitSpy(m_editor, &RcxEditor::inlineEditCommitted);
-        QMouseEvent click(QEvent::MouseButtonPress, QPointF(10, 10),
-                          QPointF(10, 10), Qt::LeftButton,
-                          Qt::LeftButton, Qt::NoModifier);
-        QApplication::sendEvent(m_editor->scintilla()->viewport(), &click);
-
+        // No inline edit state — popup handles click-away behavior
         QVERIFY(!m_editor->isEditing());
-        QCOMPARE(commitSpy.count(), 1);
-
-        // The committed text should be the original typeName (no change)
-        // First field at kFirstDataLine is InheritedAddressSpace (UInt8 → "uint8_t")
-        QList<QVariant> args = commitSpy.first();
-        QString committedText = args.at(3).toString();
-        QVERIFY2(committedText == "uint8_t",
-                 qPrintable("Expected 'uint8_t', got: " + committedText));
 
         m_editor->applyDocument(m_result);
     }
@@ -813,12 +781,11 @@ private slots:
         QVERIFY(m_editor->isEditing());
         m_editor->cancelInlineEdit();
 
-        // Type edit on Padding SHOULD succeed
+        // Type edit on Padding SHOULD succeed (emits popup signal)
+        QSignalSpy typeSpy(m_editor, &RcxEditor::typePickerRequested);
         ok = m_editor->beginInlineEdit(EditTarget::Type, paddingLine);
         QVERIFY2(ok, "Type edit should be allowed on Padding lines");
-        QVERIFY(m_editor->isEditing());
-        m_editor->cancelInlineEdit();
-        QApplication::processEvents(); // flush deferred autocomplete timer
+        QCOMPARE(typeSpy.count(), 1);
     }
 
     // ── Test: resolvedSpanFor rejects Value on Padding (defense-in-depth) ──
@@ -1095,6 +1062,247 @@ private slots:
         }
         QVERIFY2(!foundRootHeader,
                  "Root header should be suppressed from compose output");
+    }
+
+    // ── Test: MenuBarStyle gives QMenu items generous click targets ──
+    // ── Test: M_ACCENT marker appears on selected rows ──
+    void testAccentMarkerOnSelectedRows() {
+        m_editor->applyDocument(m_result);
+
+        // Find a data line with a valid nodeId
+        uint64_t targetId = 0;
+        int targetLine = -1;
+        for (int i = kFirstDataLine; i < m_result.meta.size(); i++) {
+            const auto& lm = m_result.meta[i];
+            if (lm.nodeId != 0 && lm.nodeId != kCommandRowId
+                && lm.lineKind == LineKind::Field) {
+                targetId = lm.nodeId;
+                targetLine = i;
+                break;
+            }
+        }
+        QVERIFY2(targetLine >= 0, "No data line found for accent test");
+
+        // Apply selection overlay with that node
+        QSet<uint64_t> selIds;
+        selIds.insert(targetId);
+        m_editor->applySelectionOverlay(selIds);
+
+        auto* sci = m_editor->scintilla();
+
+        // Direct test: add M_ACCENT manually and read it back
+        int directHandle = sci->markerAdd(targetLine, M_ACCENT);
+        int directMarkers = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_MARKERGET, (unsigned long)targetLine);
+        QVERIFY2(directMarkers & (1 << M_ACCENT),
+                 qPrintable(QString("Direct markerAdd(M_ACCENT=%1) failed on line %2 (handle=%3, mask=0x%4)")
+                     .arg(M_ACCENT).arg(targetLine).arg(directHandle).arg(directMarkers, 0, 16)));
+        sci->markerDelete(targetLine, M_ACCENT);
+
+        // Now test via applySelectionOverlay
+        m_editor->applySelectionOverlay(selIds);
+
+        // Verify M_SELECTED is set on the target line
+        int markers = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_MARKERGET, (unsigned long)targetLine);
+        QVERIFY2(markers & (1 << M_SELECTED),
+                 qPrintable(QString("M_SELECTED not set on line %1 (mask=0x%2)")
+                     .arg(targetLine).arg(markers, 0, 16)));
+
+        // Verify M_ACCENT is set on the target line
+        QVERIFY2(markers & (1 << M_ACCENT),
+                 qPrintable(QString("M_ACCENT not set on line %1 (mask=0x%2)")
+                     .arg(targetLine).arg(markers, 0, 16)));
+
+        // Verify a non-selected line does NOT have M_ACCENT
+        int otherLine = -1;
+        for (int i = kFirstDataLine; i < m_result.meta.size(); i++) {
+            const auto& lm = m_result.meta[i];
+            if (lm.nodeId != targetId && lm.nodeId != 0
+                && lm.nodeId != kCommandRowId && lm.lineKind == LineKind::Field) {
+                otherLine = i;
+                break;
+            }
+        }
+        if (otherLine >= 0) {
+            int otherMarkers = (int)sci->SendScintilla(
+                QsciScintillaBase::SCI_MARKERGET, (unsigned long)otherLine);
+            QVERIFY2(!(otherMarkers & (1 << M_ACCENT)),
+                     qPrintable(QString("M_ACCENT should NOT be set on non-selected line %1 (mask=0x%2)")
+                         .arg(otherLine).arg(otherMarkers, 0, 16)));
+        }
+
+        // Clear selection and verify accent is removed
+        m_editor->applySelectionOverlay(QSet<uint64_t>());
+        markers = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_MARKERGET, (unsigned long)targetLine);
+        QVERIFY2(!(markers & (1 << M_ACCENT)),
+                 qPrintable(QString("M_ACCENT should be cleared after deselection on line %1 (mask=0x%2)")
+                     .arg(targetLine).arg(markers, 0, 16)));
+    }
+
+    void testMenuItemSizeIsAccessible() {
+        // Instantiate the same QProxyStyle used by the app (MenuBarStyle is
+        // defined in main.cpp — we replicate the logic here to test it)
+        class TestMenuStyle : public QProxyStyle {
+        public:
+            using QProxyStyle::QProxyStyle;
+            QSize sizeFromContents(ContentsType type, const QStyleOption* opt,
+                                   const QSize& sz, const QWidget* w) const override {
+                QSize s = QProxyStyle::sizeFromContents(type, opt, sz, w);
+                if (type == CT_MenuBarItem)
+                    s.setHeight(s.height() + qRound(s.height() * 0.5));
+                if (type == CT_MenuItem)
+                    s = QSize(s.width() + 24, s.height() + 4);
+                return s;
+            }
+        };
+
+        TestMenuStyle style;
+        QMenu menu;
+        auto* action = menu.addAction("Delete Node");
+
+        QStyleOptionMenuItem opt;
+        opt.initFrom(&menu);
+        opt.text = action->text();
+
+        QSize base = style.QProxyStyle::sizeFromContents(
+            QStyle::CT_MenuItem, &opt, QSize(80, 20), &menu);
+        QSize styled = style.sizeFromContents(
+            QStyle::CT_MenuItem, &opt, QSize(80, 20), &menu);
+
+        // Width must grow by at least 24px
+        QVERIFY2(styled.width() >= base.width() + 24,
+                 qPrintable(QString("Menu item width %1 too narrow (base %2, need +24)")
+                     .arg(styled.width()).arg(base.width())));
+
+        // Height must grow by at least 4px
+        QVERIFY2(styled.height() >= base.height() + 4,
+                 qPrintable(QString("Menu item height %1 too short (base %2, need +4)")
+                     .arg(styled.height()).arg(base.height())));
+    }
+
+    void testMenuHoverRendersAmberText() {
+        // Replicate MenuBarStyle with drawControl hover override
+        class TestMenuStyle : public QProxyStyle {
+        public:
+            using QProxyStyle::QProxyStyle;
+            QSize sizeFromContents(ContentsType type, const QStyleOption* opt,
+                                   const QSize& sz, const QWidget* w) const override {
+                QSize s = QProxyStyle::sizeFromContents(type, opt, sz, w);
+                if (type == CT_MenuBarItem)
+                    s.setHeight(s.height() + qRound(s.height() * 0.5));
+                if (type == CT_MenuItem)
+                    s = QSize(s.width() + 24, s.height() + 4);
+                return s;
+            }
+            void drawPrimitive(PrimitiveElement elem, const QStyleOption* opt,
+                               QPainter* p, const QWidget* w) const override {
+                if (elem == PE_FrameMenu) return;
+                QProxyStyle::drawPrimitive(elem, opt, p, w);
+            }
+            void drawControl(ControlElement element, const QStyleOption* opt,
+                             QPainter* p, const QWidget* w) const override {
+                if (element == CE_MenuItem || element == CE_MenuBarItem) {
+                    if (auto* mi = qstyleoption_cast<const QStyleOptionMenuItem*>(opt)) {
+                        if ((mi->state & State_Selected)
+                            && mi->menuItemType != QStyleOptionMenuItem::Separator) {
+                            QStyleOptionMenuItem patched = *mi;
+                            patched.palette.setColor(QPalette::Highlight,
+                                mi->palette.color(QPalette::Mid));
+                            patched.palette.setColor(QPalette::HighlightedText,
+                                mi->palette.color(QPalette::Link));
+                            QProxyStyle::drawControl(element, &patched, p, w);
+                            return;
+                        }
+                    }
+                }
+                QProxyStyle::drawControl(element, opt, p, w);
+            }
+        };
+
+        // Install our style as the app style (same as main.cpp does)
+        qApp->setStyle(new TestMenuStyle("Fusion"));
+
+        // Set app palette matching applyGlobalTheme for Reclass Dark
+        QPalette pal;
+        pal.setColor(QPalette::Window,          QColor("#1e1e1e"));
+        pal.setColor(QPalette::WindowText,      QColor("#d4d4d4"));
+        pal.setColor(QPalette::Base,            QColor("#252526"));
+        pal.setColor(QPalette::AlternateBase,   QColor("#2a2d2e"));
+        pal.setColor(QPalette::Text,            QColor("#d4d4d4"));
+        pal.setColor(QPalette::Button,          QColor("#333333"));
+        pal.setColor(QPalette::ButtonText,      QColor("#d4d4d4"));
+        pal.setColor(QPalette::Highlight,       QColor("#2b2b2b"));
+        pal.setColor(QPalette::HighlightedText, QColor("#E6B450"));
+        pal.setColor(QPalette::Mid,             QColor("#3c3c3c"));
+        pal.setColor(QPalette::Dark,            QColor("#1e1e1e"));
+        pal.setColor(QPalette::Light,           QColor("#505050"));
+        pal.setColor(QPalette::Link,            QColor("#E6B450"));
+        qApp->setPalette(pal);
+
+        // Build and show a real QMenu
+        QMenu menu;
+        menu.addAction("First Item");
+        menu.addAction("Second Item");
+        menu.addAction("Third Item");
+        menu.popup(QPoint(100, 100));
+        QVERIFY(QTest::qWaitForWindowExposed(&menu));
+        QApplication::processEvents();
+
+        // ── Deliver real mouse events to trigger hover on second item ──
+        QList<QAction*> actions = menu.actions();
+        QRect itemRect = menu.actionGeometry(actions[1]);
+        QPoint localCenter = itemRect.center();
+
+        // Enter event — tells QMenu the mouse is inside
+        QEvent enter(QEvent::Enter);
+        QApplication::sendEvent(&menu, &enter);
+        QApplication::processEvents();
+
+        // MouseMove to the second item — triggers hover/select
+        QMouseEvent move(QEvent::MouseMove, QPointF(localCenter),
+                         menu.mapToGlobal(localCenter),
+                         Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&menu, &move);
+        QApplication::processEvents();
+        QTest::qWait(50);  // let repaint settle
+
+        // Verify QMenu internally considers the action hovered
+        QVERIFY2(menu.activeAction() == actions[1],
+                 "QMenu did not set activeAction after mouse move — "
+                 "hover event delivery failed");
+
+        // ── Capture what's actually on screen ──
+        QScreen* screen = QGuiApplication::primaryScreen();
+        QVERIFY(screen);
+        QPixmap grab = screen->grabWindow(menu.winId());
+        QImage img = grab.toImage().convertToFormat(QImage::Format_ARGB32);
+
+        // Crop to just the hovered item rect
+        QImage itemImg = img.copy(itemRect);
+
+        // Scan hovered item for amber pixels (E6B450 = R:230 G:180 B:80)
+        int amberPixels = 0;
+        int totalPixels = itemImg.width() * itemImg.height();
+        for (int y = 0; y < itemImg.height(); ++y) {
+            for (int x = 0; x < itemImg.width(); ++x) {
+                QColor c = itemImg.pixelColor(x, y);
+                if (c.red() > 180 && c.green() > 140 && c.blue() < 100)
+                    ++amberPixels;
+            }
+        }
+
+        // Always save screenshots so we can visually inspect
+        img.save("menu_hover_full.png");
+        itemImg.save("menu_hover_item.png");
+
+        menu.close();
+
+        QVERIFY2(amberPixels > 10,
+                 qPrintable(QString("Expected amber text pixels in hovered item, "
+                     "found %1 / %2 total (see menu_hover_full.png, menu_hover_item.png)")
+                     .arg(amberPixels).arg(totalPixels)));
     }
 };
 
