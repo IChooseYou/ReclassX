@@ -2237,6 +2237,7 @@ void RcxEditor::setEditorFont(const QString& fontName) {
 
     // Re-apply margin styles and width with new font metrics
     allocateMarginStyles();
+    applyTheme(ThemeManager::instance().current());
     QString marginSizer = QString("  %1  ").arg(QString(m_layout.offsetHexDigits, '0'));
     m_sci->setMarginWidth(0, marginSizer);
 }
