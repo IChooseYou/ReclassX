@@ -60,6 +60,8 @@ add_executable(Reclass
     src/themes/themeeditor.h
     src/themes/themeeditor.cpp
     src/mainwindow.h
+    src/titlebar.h
+    src/titlebar.cpp
     src/mcp/mcp_bridge.h
     src/mcp/mcp_bridge.cpp
     $<$<PLATFORM_ID:Windows>:src/app.rc>

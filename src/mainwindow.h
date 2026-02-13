@@ -1,5 +1,6 @@
 #pragma once
 #include "controller.h"
+#include "titlebar.h"
 #include "pluginmanager.h"
 #include <QMainWindow>
 #include <QMdiArea>
@@ -59,11 +60,13 @@ public:
 private:
     enum ViewMode { VM_Reclass, VM_Rendered };
 
-    QMdiArea* m_mdiArea;
-    QLabel*   m_statusLabel;
-    PluginManager m_pluginManager;
-    McpBridge*    m_mcp       = nullptr;
-    QAction*      m_mcpAction = nullptr;
+    QMdiArea*       m_mdiArea;
+    QLabel*         m_statusLabel;
+    TitleBarWidget* m_titleBar = nullptr;
+    QWidget*        m_borderOverlay = nullptr;
+    PluginManager   m_pluginManager;
+    McpBridge*      m_mcp       = nullptr;
+    QAction*        m_mcpAction = nullptr;
 
     struct SplitPane {
         QTabWidget*    tabWidget = nullptr;
@@ -114,6 +117,11 @@ private:
     QStandardItemModel* m_workspaceModel = nullptr;
     void createWorkspaceDock();
     void rebuildWorkspaceModel();
+    void updateBorderColor(const QColor& color);
+
+protected:
+    void changeEvent(QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 };
 
 } // namespace rcx

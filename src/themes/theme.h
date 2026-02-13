@@ -13,6 +13,7 @@ struct Theme {
     QColor backgroundAlt;   // panels, tab selected, tooltips
     QColor surface;         // alternateBase
     QColor border;          // separators, menu borders
+    QColor borderFocused;   // window border when focused
     QColor button;          // button bg
 
     // ── Text ──

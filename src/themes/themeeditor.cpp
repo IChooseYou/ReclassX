@@ -124,6 +124,7 @@ ThemeEditor::ThemeEditor(int themeIndex, QWidget* parent)
         {"Background Alt", &Theme::backgroundAlt},
         {"Surface",        &Theme::surface},
         {"Border",         &Theme::border},
+        {"Border Focused", &Theme::borderFocused},
         {"Button",         &Theme::button},
     });
     addGroup("Text", {

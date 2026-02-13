@@ -46,6 +46,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <windowsx.h>
 #include <dwmapi.h>
 #include <dbghelp.h>
 #include <cstdio>
@@ -230,6 +231,21 @@ static void applyGlobalTheme(const rcx::Theme& theme) {
     qApp->setStyleSheet(QString());
 }
 
+class BorderOverlay : public QWidget {
+public:
+    QColor color;
+    explicit BorderOverlay(QWidget* parent) : QWidget(parent) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFocusPolicy(Qt::NoFocus);
+    }
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setPen(color);
+        p.drawRect(0, 0, width() - 1, height() - 1);
+    }
+};
+
 namespace rcx {
 
 // MainWindow class declaration is in mainwindow.h
@@ -237,6 +253,32 @@ namespace rcx {
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("Reclass");
     resize(1200, 800);
+
+    // Frameless window with system menu (Alt+Space) and min/max/close support
+    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowSystemMenuHint
+                   | Qt::WindowMinMaxButtonsHint);
+
+    // Custom title bar (replaces native menu bar area in QMainWindow)
+    m_titleBar = new TitleBarWidget(this);
+    m_titleBar->applyTheme(ThemeManager::instance().current());
+    setMenuWidget(m_titleBar);
+
+#ifdef _WIN32
+    // 1px top margin preserves DWM drop shadow on the frameless window
+    {
+        auto hwnd = reinterpret_cast<HWND>(winId());
+        MARGINS margins = {0, 0, 1, 0};
+        DwmExtendFrameIntoClientArea(hwnd, &margins);
+    }
+#endif
+
+    // Border overlay — draws a 1px colored border on top of everything
+    auto* overlay = new BorderOverlay(this);
+    m_borderOverlay = overlay;
+    overlay->color = ThemeManager::instance().current().borderFocused;
+    overlay->setGeometry(rect());
+    overlay->raise();
+    overlay->show();
 
     m_mdiArea = new QMdiArea(this);
     m_mdiArea->setViewMode(QMdiArea::TabbedView);
@@ -306,7 +348,7 @@ QIcon MainWindow::makeIcon(const QString& svgPath) {
 
 void MainWindow::createMenus() {
     // File
-    auto* file = menuBar()->addMenu("&File");
+    auto* file = m_titleBar->menuBar()->addMenu("&File");
     file->addAction("&New", this, &MainWindow::newDocument, QKeySequence::New);
     file->addAction("New &Tab", this, &MainWindow::newFile, QKeySequence(Qt::CTRL | Qt::Key_T));
     file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", this, &MainWindow::openFile, QKeySequence::Open);
@@ -321,14 +363,14 @@ void MainWindow::createMenus() {
     file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", this, &QMainWindow::close, QKeySequence(Qt::Key_Close));
 
     // Edit
-    auto* edit = menuBar()->addMenu("&Edit");
+    auto* edit = m_titleBar->menuBar()->addMenu("&Edit");
     edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", this, &MainWindow::undo, QKeySequence::Undo);
     edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", this, &MainWindow::redo, QKeySequence::Redo);
     edit->addSeparator();
     edit->addAction("&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
 
     // View
-    auto* view = menuBar()->addMenu("&View");
+    auto* view = m_titleBar->menuBar()->addMenu("&View");
     view->addAction(makeIcon(":/vsicons/split-horizontal.svg"), "Split &Horizontal", this, &MainWindow::splitView);
     view->addAction(makeIcon(":/vsicons/chrome-close.svg"), "&Unsplit", this, &MainWindow::unsplitView);
     view->addSeparator();
@@ -371,7 +413,7 @@ void MainWindow::createMenus() {
     view->addAction(m_workspaceDock->toggleViewAction());
 
     // Node
-    auto* node = menuBar()->addMenu("&Node");
+    auto* node = m_titleBar->menuBar()->addMenu("&Node");
     node->addAction(makeIcon(":/vsicons/add.svg"), "&Add Field", this, &MainWindow::addNode, QKeySequence(Qt::Key_Insert));
     node->addAction(makeIcon(":/vsicons/remove.svg"), "&Remove Field", this, &MainWindow::removeNode, QKeySequence::Delete);
     node->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "Change &Type", this, &MainWindow::changeNodeType, QKeySequence(Qt::Key_T));
@@ -379,11 +421,11 @@ void MainWindow::createMenus() {
     node->addAction(makeIcon(":/vsicons/files.svg"), "D&uplicate", this, &MainWindow::duplicateNodeAction)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
 
     // Plugins
-    auto* plugins = menuBar()->addMenu("&Plugins");
+    auto* plugins = m_titleBar->menuBar()->addMenu("&Plugins");
     plugins->addAction("&Manage Plugins...", this, &MainWindow::showPluginsDialog);
 
     // Help
-    auto* help = menuBar()->addMenu("&Help");
+    auto* help = m_titleBar->menuBar()->addMenu("&Help");
     help->addAction(makeIcon(":/vsicons/question.svg"), "&About Reclass", this, &MainWindow::about);
 }
 
@@ -879,6 +921,12 @@ void MainWindow::toggleMcp() {
 void MainWindow::applyTheme(const Theme& theme) {
     applyGlobalTheme(theme);
 
+    // Custom title bar
+    m_titleBar->applyTheme(theme);
+
+    // Update border overlay color
+    updateBorderColor(isActiveWindow() ? theme.borderFocused : theme.border);
+
     // MDI area tabs
     m_mdiArea->setStyleSheet(QStringLiteral(
         "QTabBar::tab {"
@@ -984,6 +1032,7 @@ MainWindow::TabState* MainWindow::tabByIndex(int index) {
 }
 
 void MainWindow::updateWindowTitle() {
+    QString title;
     auto* sub = m_mdiArea->activeSubWindow();
     if (sub && m_tabs.contains(sub)) {
         auto& tab = m_tabs[sub];
@@ -991,10 +1040,12 @@ void MainWindow::updateWindowTitle() {
                        ? rootName(tab.doc->tree, tab.ctrl->viewRootId())
                        : QFileInfo(tab.doc->filePath).fileName();
         if (tab.doc->modified) name += " *";
-        setWindowTitle(name + " - Reclass");
+        title = name + " - Reclass";
     } else {
-        setWindowTitle("Reclass");
+        title = "Reclass";
     }
+    setWindowTitle(title);
+    m_titleBar->setTitle(title);
 }
 
 // ── Rendered view setup ──
@@ -1472,6 +1523,29 @@ void MainWindow::showPluginsDialog() {
     layout->addLayout(btnLayout);
 
     dialog.exec();
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::ActivationChange) {
+        const auto& t = ThemeManager::instance().current();
+        updateBorderColor(isActiveWindow() ? t.borderFocused : t.border);
+    }
+    if (event->type() == QEvent::WindowStateChange)
+        m_titleBar->updateMaximizeIcon();
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    if (m_borderOverlay) {
+        m_borderOverlay->setGeometry(rect());
+        m_borderOverlay->raise();
+    }
+}
+
+void MainWindow::updateBorderColor(const QColor& color) {
+    static_cast<BorderOverlay*>(m_borderOverlay)->color = color;
+    m_borderOverlay->update();
 }
 
 } // namespace rcx

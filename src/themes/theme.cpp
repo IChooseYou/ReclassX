@@ -11,6 +11,7 @@ static const ColorField kFields[] = {
     {"backgroundAlt", &Theme::backgroundAlt},
     {"surface",       &Theme::surface},
     {"border",        &Theme::border},
+    {"borderFocused", &Theme::borderFocused},
     {"button",        &Theme::button},
     {"text",          &Theme::text},
     {"textDim",       &Theme::textDim},
@@ -61,6 +62,7 @@ Theme Theme::reclassDark() {
     t.backgroundAlt = QColor("#252526");
     t.surface       = QColor("#2a2d2e");
     t.border        = QColor("#3c3c3c");
+    t.borderFocused = QColor("#64e6b450");  // indHoverSpan at ~40% alpha
     t.button        = QColor("#333333");
     t.text          = QColor("#d4d4d4");
     t.textDim       = QColor("#858585");
@@ -92,6 +94,7 @@ Theme Theme::warm() {
     t.backgroundAlt = QColor("#2a2a2a");
     t.surface       = QColor("#2a2a2a");
     t.border        = QColor("#373737");
+    t.borderFocused = QColor("#64aa9565");  // indHoverSpan at ~40% alpha
     t.button        = QColor("#373737");
     t.text          = QColor("#AAA99F");
     t.textDim       = QColor("#7a7a6e");

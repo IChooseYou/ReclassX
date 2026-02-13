@@ -20,6 +20,9 @@
         <file alias="arrow-right.svg">vsicons/arrow-right.svg</file>
         <file alias="split-horizontal.svg">vsicons/split-horizontal.svg</file>
         <file alias="chrome-close.svg">vsicons/chrome-close.svg</file>
+        <file alias="chrome-minimize.svg">vsicons/chrome-minimize.svg</file>
+        <file alias="chrome-maximize.svg">vsicons/chrome-maximize.svg</file>
+        <file alias="chrome-restore.svg">vsicons/chrome-restore.svg</file>
         <file alias="text-size.svg">vsicons/text-size.svg</file>
         <file alias="add.svg">vsicons/add.svg</file>
         <file alias="remove.svg">vsicons/remove.svg</file>
