@@ -2075,9 +2075,63 @@ void RcxEditor::applyHoverCursor() {
     // Apply hover span indicator for editable tokens
     if (tokenHit && !isFooterLine) {
         NormalizedSpan span;
-        if (resolvedSpanFor(line, t, span)) {
-            fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
-            m_hoverSpanLines.append(line);
+        QString lineText;
+        if (resolvedSpanFor(line, t, span, &lineText)) {
+            // For vector/matrix values: narrow hover to the component under cursor
+            bool narrowed = false;
+            if (t == EditTarget::Value && line >= 0 && line < m_meta.size()) {
+                const auto& lm = m_meta[line];
+                if (isVectorKind(lm.nodeKind) || isMatrixKind(lm.nodeKind)) {
+                    QString val = lineText.mid(span.start, span.end - span.start);
+                    int innerStart = span.start;
+                    QString inner = val;
+                    if (isMatrixKind(lm.nodeKind)) {
+                        int bo = val.indexOf('['), bc = val.lastIndexOf(']');
+                        if (bo >= 0 && bc > bo) {
+                            inner = val.mid(bo + 1, bc - bo - 1);
+                            innerStart = span.start + bo + 1;
+                        }
+                    }
+                    QVector<int> starts, ends;
+                    starts.append(0);
+                    for (int i = 0; i < inner.size(); i++) {
+                        if (inner[i] == ',') {
+                            ends.append(i);
+                            int n = i + 1;
+                            while (n < inner.size() && inner[n] == ' ') n++;
+                            starts.append(n);
+                        }
+                    }
+                    ends.append(inner.size());
+                    // Trim trailing spaces from last component to get true end
+                    int lastEnd = ends.last();
+                    while (lastEnd > 0 && inner[lastEnd - 1] == ' ') lastEnd--;
+                    // Skip highlight if cursor is past the last component
+                    int relCol = h.col - innerStart;
+                    if (relCol >= lastEnd) {
+                        narrowed = true;  // suppress highlight entirely
+                    } else {
+                        int comp = 0;
+                        for (int i = 0; i < starts.size(); i++) {
+                            if (relCol >= starts[i] && (i == starts.size() - 1 || relCol < starts[i + 1])) {
+                                comp = i; break;
+                            }
+                        }
+                        int cS = innerStart + starts[comp];
+                        int cE = innerStart + ends[comp];
+                        while (cE > cS && lineText[cE - 1] == ' ') cE--;
+                        span.start = cS;
+                        span.end = cE;
+                        narrowed = true;
+                        fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
+                        m_hoverSpanLines.append(line);
+                    }
+                }
+            }
+            if (!narrowed && h.col >= span.start && h.col < span.end) {
+                fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
+                m_hoverSpanLines.append(line);
+            }
         }
     }
 
