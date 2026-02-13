@@ -62,6 +62,7 @@ add_executable(Reclass
     src/mainwindow.h
     src/mcp/mcp_bridge.h
     src/mcp/mcp_bridge.cpp
+    $<$<PLATFORM_ID:Windows>:src/app.rc>
 )
 
 target_include_directories(Reclass PRIVATE src)
@@ -79,8 +80,8 @@ if(WIN32)
     target_link_libraries(Reclass PRIVATE dbghelp dwmapi psapi)
 endif()
 
-add_executable(rcx-mcp-stdio tools/rcx-mcp-stdio.cpp)
-target_link_libraries(rcx-mcp-stdio PRIVATE ${QT}::Core ${QT}::Network)
+add_executable(ReclassMcpBridge tools/rcx-mcp-stdio.cpp)
+target_link_libraries(ReclassMcpBridge PRIVATE ${QT}::Core ${QT}::Network)
 
 include(deploy)
 

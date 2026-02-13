@@ -253,6 +253,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             .arg(t.background.name(), t.textMuted.name(), t.text.name(),
                  t.backgroundAlt.name(), t.hover.name()));
     }
+    {
+        QSettings settings("Reclass", "Reclass");
+        QString fontName = settings.value("font", "JetBrains Mono").toString();
+        QFont f(fontName, 12);
+        f.setFixedPitch(true);
+        if (auto* tb = m_mdiArea->findChild<QTabBar*>())
+            tb->setFont(f);
+    }
     setCentralWidget(m_mdiArea);
 
     createWorkspaceDock();
@@ -488,13 +496,32 @@ RcxEditor* MainWindow::activePaneEditor() {
     return pane ? pane->editor : nullptr;
 }
 
+static QString rootName(const NodeTree& tree, uint64_t viewRootId = 0) {
+    if (viewRootId != 0) {
+        int idx = tree.indexOfId(viewRootId);
+        if (idx >= 0) {
+            const auto& n = tree.nodes[idx];
+            if (!n.structTypeName.isEmpty()) return n.structTypeName;
+            if (!n.name.isEmpty()) return n.name;
+        }
+    }
+    for (const auto& n : tree.nodes) {
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+            if (!n.structTypeName.isEmpty()) return n.structTypeName;
+            if (!n.name.isEmpty()) return n.name;
+        }
+    }
+    return QStringLiteral("Untitled");
+}
+
 QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
     auto* splitter = new QSplitter(Qt::Horizontal);
     auto* ctrl = new RcxController(doc, splitter);
 
     auto* sub = m_mdiArea->addSubWindow(splitter);
+    sub->setWindowIcon(QIcon());  // suppress app icon in MDI tabs
     sub->setWindowTitle(doc->filePath.isEmpty()
-                        ? "Untitled" : QFileInfo(doc->filePath).fileName());
+                        ? rootName(doc->tree) : QFileInfo(doc->filePath).fileName());
     sub->setAttribute(Qt::WA_DeleteOnClose);
     sub->showMaximized();
 
@@ -553,8 +580,13 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
         if (it != m_tabs.end())
             QTimer::singleShot(0, this, [this, sub]() {
                 auto it2 = m_tabs.find(sub);
-                if (it2 != m_tabs.end()) updateAllRenderedPanes(*it2);
+                if (it2 != m_tabs.end()) {
+                    updateAllRenderedPanes(*it2);
+                    if (it2->doc->filePath.isEmpty())
+                        sub->setWindowTitle(rootName(it2->doc->tree, it2->ctrl->viewRootId()));
+                }
                 rebuildWorkspaceModel();
+                updateWindowTitle();
             });
     });
     connect(&doc->undoStack, &QUndoStack::indexChanged,
@@ -563,7 +595,12 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
         if (it != m_tabs.end())
             QTimer::singleShot(0, this, [this, sub]() {
                 auto it2 = m_tabs.find(sub);
-                if (it2 != m_tabs.end()) updateAllRenderedPanes(*it2);
+                if (it2 != m_tabs.end()) {
+                    updateAllRenderedPanes(*it2);
+                    if (it2->doc->filePath.isEmpty())
+                        sub->setWindowTitle(rootName(it2->doc->tree, it2->ctrl->viewRootId()));
+                }
+                updateWindowTitle();
             });
     });
 
@@ -677,7 +714,7 @@ void MainWindow::newDocument() {
     emit doc->documentChanged();
 
     auto* sub = m_mdiArea->activeSubWindow();
-    if (sub) sub->setWindowTitle("Untitled");
+    if (sub) sub->setWindowTitle(rootName(doc->tree, ctrl->viewRootId()));
     updateWindowTitle();
     rebuildWorkspaceModel();
 }
@@ -835,7 +872,7 @@ void MainWindow::toggleMcp() {
     } else {
         m_mcp->start();
         m_mcpAction->setText("Stop &MCP Server");
-        m_statusLabel->setText("MCP server listening on pipe: rcx-mcp");
+        m_statusLabel->setText("MCP server listening on pipe: ReclassMcpBridge");
     }
 }
 
@@ -916,6 +953,9 @@ void MainWindow::setEditorFont(const QString& fontName) {
         m_workspaceTree->setFont(f);
     // Sync status bar font
     statusBar()->setFont(f);
+    // Sync MDI tab bar font
+    if (auto* tb = m_mdiArea->findChild<QTabBar*>())
+        tb->setFont(f);
     // Sync menu bar / menu font via global stylesheet
     applyGlobalTheme(ThemeManager::instance().current());
 }
@@ -947,7 +987,8 @@ void MainWindow::updateWindowTitle() {
     auto* sub = m_mdiArea->activeSubWindow();
     if (sub && m_tabs.contains(sub)) {
         auto& tab = m_tabs[sub];
-        QString name = tab.doc->filePath.isEmpty() ? "Untitled"
+        QString name = tab.doc->filePath.isEmpty()
+                       ? rootName(tab.doc->tree, tab.ctrl->viewRootId())
                        : QFileInfo(tab.doc->filePath).fileName();
         if (tab.doc->modified) name += " *";
         setWindowTitle(name + " - Reclass");
@@ -1325,7 +1366,8 @@ void MainWindow::rebuildWorkspaceModel() {
 
     TabState& tab = m_tabs[sub];
     QString tabName = tab.doc->filePath.isEmpty()
-        ? "Untitled" : QFileInfo(tab.doc->filePath).fileName();
+        ? rootName(tab.doc->tree, tab.ctrl->viewRootId())
+        : QFileInfo(tab.doc->filePath).fileName();
 
     buildWorkspaceModel(m_workspaceModel, tab.doc->tree, tabName,
                         static_cast<void*>(sub));
@@ -1461,6 +1503,7 @@ int main(int argc, char* argv[]) {
     applyGlobalTheme(rcx::ThemeManager::instance().current());
 
     rcx::MainWindow window;
+    window.setWindowIcon(QIcon(":/icons/class.png"));
 
     bool screenshotMode = app.arguments().contains("--screenshot");
     if (screenshotMode)

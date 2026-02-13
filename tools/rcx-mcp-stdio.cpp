@@ -1,5 +1,5 @@
-// rcx-mcp-stdio: Bridges stdin/stdout to QLocalSocket for MCP transport.
-// Claude Desktop spawns this process; it connects to the rcx-mcp named pipe
+// ReclassMcpBridge: Bridges stdin/stdout to QLocalSocket for MCP transport.
+// Claude Desktop spawns this process; it connects to the ReclassMcpBridge named pipe
 // inside the running Reclass application.
 //
 // stdin  (from Claude) → QLocalSocket → McpBridge (in Reclass)
@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
     });
 
     QObject::connect(socket, &QLocalSocket::disconnected, [&]() {
-        fprintf(stderr, "[rcx-mcp-stdio] Disconnected from server\n");
+        fprintf(stderr, "[ReclassMcpBridge] Disconnected from server\n");
         app.quit();
     });
 
@@ -52,19 +52,19 @@ int main(int argc, char* argv[]) {
 #else
     QObject::connect(socket, QOverload<QLocalSocket::LocalSocketError>::of(&QLocalSocket::error), [&](QLocalSocket::LocalSocketError err) {
 #endif
-        fprintf(stderr, "[rcx-mcp-stdio] Socket error %d: %s\n",
+        fprintf(stderr, "[ReclassMcpBridge] Socket error %d: %s\n",
                 (int)err, socket->errorString().toUtf8().constData());
         app.quit();
     });
 
     // Connect to the named pipe
-    socket->connectToServer("rcx-mcp");
+    socket->connectToServer("ReclassMcpBridge");
     if (!socket->waitForConnected(5000)) {
-        fprintf(stderr, "[rcx-mcp-stdio] Failed to connect to rcx-mcp pipe: %s\n",
+        fprintf(stderr, "[ReclassMcpBridge] Failed to connect to ReclassMcpBridge pipe: %s\n",
                 socket->errorString().toUtf8().constData());
         return 1;
     }
-    fprintf(stderr, "[rcx-mcp-stdio] Connected to rcx-mcp\n");
+    fprintf(stderr, "[ReclassMcpBridge] Connected to ReclassMcpBridge\n");
 
     // Stdin → socket: poll stdin with a timer (stdin isn't a socket on Windows)
     QByteArray stdinBuf;

@@ -2,6 +2,7 @@
     <qresource prefix="/icons">
         <file alias="chevron-right.png">icons/chevron-right.png</file>
         <file alias="chevron-down.png">icons/chevron-down.png</file>
+        <file alias="class.png">icons/class.png</file>
     </qresource>
     <qresource prefix="/fonts">
         <file alias="JetBrainsMono.ttf">fonts/JetBrainsMono.ttf</file>
