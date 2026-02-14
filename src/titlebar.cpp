@@ -103,7 +103,7 @@ void TitleBarWidget::applyTheme(const Theme& theme) {
 void TitleBarWidget::setShowIcon(bool show) {
     if (show) {
         m_appLabel->setText(QString());
-        m_appLabel->setPixmap(QIcon(":/icons/class.png").pixmap(16, 16));
+        m_appLabel->setPixmap(QIcon(":/icons/class.png").pixmap(24, 24));
     } else {
         m_appLabel->setPixmap(QPixmap());
         m_appLabel->setText(QStringLiteral("Reclass"));
