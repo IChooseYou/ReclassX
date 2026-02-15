@@ -134,9 +134,11 @@ jobs:
           cp src/icons/class.png AppDir/usr/share/icons/hicolor/256x256/apps/reclass.png
 
           # Create AppImage with Qt libs bundled
-          # Qt6_DIR points to cmake config dir; derive the Qt root from it
-          QT_ROOT=$(cd "$Qt6_DIR/../../.." && pwd)
-          export QMAKE="$QT_ROOT/bin/qmake"
+          # install-qt-action adds Qt bin to PATH; find qmake there
+          QMAKE_BIN=$(which qmake 2>/dev/null || which qmake6 2>/dev/null || find "$RUNNER_WORKSPACE" -name qmake -path "*/bin/*" | head -1)
+          echo "Found qmake at: $QMAKE_BIN"
+          export QMAKE="$QMAKE_BIN"
+          QT_ROOT=$(dirname "$(dirname "$QMAKE_BIN")")
           export LD_LIBRARY_PATH="$QT_ROOT/lib:$LD_LIBRARY_PATH"
           export EXTRA_QT_PLUGINS="svg;iconengines"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
