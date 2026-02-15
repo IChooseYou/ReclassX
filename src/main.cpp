@@ -161,6 +161,13 @@ public:
             s = QSize(s.width() + 24, s.height() + 4);
         return s;
     }
+    int pixelMetric(PixelMetric metric, const QStyleOption* opt,
+                    const QWidget* w) const override {
+        // Kill the 1px frame margin Fusion reserves around QMenu contents
+        if (metric == PM_MenuPanelWidth)
+            return 0;
+        return QProxyStyle::pixelMetric(metric, opt, w);
+    }
     void drawPrimitive(PrimitiveElement elem, const QStyleOption* opt,
                        QPainter* p, const QWidget* w) const override {
         // Kill Fusion's 3D bevel on QMenu — the OS drop shadow is enough
@@ -206,7 +213,7 @@ static void applyGlobalTheme(const rcx::Theme& theme) {
     QPalette pal;
     pal.setColor(QPalette::Window,          theme.background);
     pal.setColor(QPalette::WindowText,      theme.text);
-    pal.setColor(QPalette::Base,            theme.backgroundAlt);
+    pal.setColor(QPalette::Base,            theme.background);
     pal.setColor(QPalette::AlternateBase,   theme.surface);
     pal.setColor(QPalette::Text,            theme.text);
     pal.setColor(QPalette::Button,          theme.button);
@@ -674,6 +681,7 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
                         sub->setWindowTitle(rootName(it2->doc->tree, it2->ctrl->viewRootId()));
                 }
                 updateWindowTitle();
+                rebuildWorkspaceModel();
             });
     });
 
@@ -746,6 +754,25 @@ static void buildBallDemo(NodeTree& tree) {
 
     // Material[2] materials at offset 128 (112 + 16 for float[4])
     { Node n; n.kind = NodeKind::Array; n.name = "materials"; n.parentId = ballId; n.offset = 128; n.elementKind = NodeKind::Struct; n.arrayLen = 2; n.refId = matId; tree.addNode(n); }
+
+    // Unnamed struct (128 bytes of hex64 fields)
+    Node unnamed;
+    unnamed.kind = NodeKind::Struct;
+    unnamed.name = "instance";
+    unnamed.structTypeName = "Unnamed";
+    unnamed.parentId = 0;
+    unnamed.offset = 0;
+    int ui = tree.addNode(unnamed);
+    uint64_t unnamedId = tree.nodes[ui].id;
+
+    for (int i = 0; i < 16; i++) {
+        Node n;
+        n.kind = NodeKind::Hex64;
+        n.name = QStringLiteral("field_%1").arg(i * 8, 2, 16, QChar('0'));
+        n.parentId = unnamedId;
+        n.offset = i * 8;
+        tree.addNode(n);
+    }
 }
 
 void MainWindow::newFile() {
@@ -794,41 +821,7 @@ void MainWindow::newDocument() {
 }
 
 void MainWindow::selfTest() {
-    // Tab 1: Ball demo
     project_new();
-
-    // Tab 2: Unnamed struct with hex64 fields
-    {
-        auto* doc = new RcxDocument(this);
-        QByteArray data(256, '\0');
-        doc->loadData(data);
-        doc->tree.baseAddress = 0x00400000;
-
-        Node s;
-        s.kind = NodeKind::Struct;
-        s.name = "instance";
-        s.structTypeName = "Unnamed";
-        s.parentId = 0;
-        s.offset = 0;
-        int si = doc->tree.addNode(s);
-        uint64_t sId = doc->tree.nodes[si].id;
-
-        for (int i = 0; i < 16; i++) {
-            Node n;
-            n.kind = NodeKind::Hex64;
-            n.name = QStringLiteral("field_%1").arg(i * 8, 2, 16, QChar('0'));
-            n.parentId = sId;
-            n.offset = i * 8;
-            doc->tree.addNode(n);
-        }
-
-        createTab(doc);
-        rebuildWorkspaceModel();
-    }
-
-    // Focus Ball tab
-    if (auto* first = m_mdiArea->subWindowList().value(0))
-        m_mdiArea->setActiveSubWindow(first);
 }
 
 void MainWindow::openFile() {
@@ -1012,6 +1005,13 @@ void MainWindow::applyTheme(const Theme& theme) {
         sbPal.setColor(QPalette::Window, theme.background);
         sbPal.setColor(QPalette::WindowText, theme.textDim);
         statusBar()->setPalette(sbPal);
+    }
+
+    // Workspace tree: text color matches menu bar
+    if (m_workspaceTree) {
+        QPalette tp = m_workspaceTree->palette();
+        tp.setColor(QPalette::Text, theme.textDim);
+        m_workspaceTree->setPalette(tp);
     }
 
     // Split pane tab widgets
@@ -1422,7 +1422,7 @@ void MainWindow::project_close(QMdiSubWindow* sub) {
 // ── Workspace Dock ──
 
 void MainWindow::createWorkspaceDock() {
-    m_workspaceDock = new QDockWidget("Workspace", this);
+    m_workspaceDock = new QDockWidget("Project Tree", this);
     m_workspaceDock->setObjectName("WorkspaceDock");
     m_workspaceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
@@ -1432,81 +1432,51 @@ void MainWindow::createWorkspaceDock() {
     m_workspaceTree->setModel(m_workspaceModel);
     m_workspaceTree->setHeaderHidden(true);
     m_workspaceTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-    // Match editor font
-    {
-        QSettings settings("Reclass", "Reclass");
-        QString fontName = settings.value("font", "JetBrains Mono").toString();
-        QFont f(fontName, 12);
-        f.setFixedPitch(true);
-        m_workspaceTree->setFont(f);
-    }
+    m_workspaceTree->setExpandsOnDoubleClick(false);
+    m_workspaceTree->setMouseTracking(true);
 
     m_workspaceDock->setWidget(m_workspaceTree);
     addDockWidget(Qt::LeftDockWidgetArea, m_workspaceDock);
     m_workspaceDock->hide();
 
+
     connect(m_workspaceTree, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
-        // Data roles: UserRole=QMdiSubWindow*, UserRole+1=structId, UserRole+2=nodeId
+        auto structIdVar = index.data(Qt::UserRole + 1);
+        uint64_t structId = structIdVar.isValid() ? structIdVar.toULongLong() : 0;
+
+        if (structId == rcx::kGroupSentinel) {
+            // "Project" folder: toggle expand/collapse
+            m_workspaceTree->setExpanded(index, !m_workspaceTree->isExpanded(index));
+            return;
+        }
+
         auto subVar = index.data(Qt::UserRole);
         if (!subVar.isValid()) return;
-
         auto* sub = static_cast<QMdiSubWindow*>(subVar.value<void*>());
         if (!sub || !m_tabs.contains(sub)) return;
 
         m_mdiArea->setActiveSubWindow(sub);
 
-        auto structIdVar = index.data(Qt::UserRole + 1);
-        auto nodeIdVar   = index.data(Qt::UserRole + 2);
-
-        if (structIdVar.isValid()) {
-            // Double-clicked a struct: set as view root
-            uint64_t structId = structIdVar.toULongLong();
-            auto& tree = m_tabs[sub].doc->tree;
-            int ni = tree.indexOfId(structId);
-            if (ni >= 0) tree.nodes[ni].collapsed = false;
-            m_tabs[sub].ctrl->setViewRootId(structId);
-            m_tabs[sub].ctrl->scrollToNodeId(structId);
-        } else if (nodeIdVar.isValid()) {
-            // Double-clicked a field: find its root struct, set as view root, scroll to field
-            uint64_t nodeId = nodeIdVar.toULongLong();
-            auto& tree = m_tabs[sub].doc->tree;
-            // Walk up to find root struct
-            uint64_t rootId = 0;
-            uint64_t cur = nodeId;
-            while (cur != 0) {
-                int idx = tree.indexOfId(cur);
-                if (idx < 0) break;
-                if (tree.nodes[idx].parentId == 0) { rootId = cur; break; }
-                cur = tree.nodes[idx].parentId;
-            }
-            if (rootId != 0) {
-                int ri = tree.indexOfId(rootId);
-                if (ri >= 0) tree.nodes[ri].collapsed = false;
-                m_tabs[sub].ctrl->setViewRootId(rootId);
-            }
-            m_tabs[sub].ctrl->scrollToNodeId(nodeId);
-        } else if (!index.parent().isValid()) {
-            // Double-clicked project root: clear view root to show all
-            m_tabs[sub].ctrl->setViewRootId(0);
-        }
+        // Type/Enum node: navigate to it
+        auto& tree = m_tabs[sub].doc->tree;
+        int ni = tree.indexOfId(structId);
+        if (ni >= 0) tree.nodes[ni].collapsed = false;
+        m_tabs[sub].ctrl->setViewRootId(structId);
+        m_tabs[sub].ctrl->scrollToNodeId(structId);
     });
 }
 
 void MainWindow::rebuildWorkspaceModel() {
-    m_workspaceModel->clear();
-
-    auto* sub = m_mdiArea->activeSubWindow();
-    if (!sub || !m_tabs.contains(sub)) return;
-
-    TabState& tab = m_tabs[sub];
-    QString tabName = tab.doc->filePath.isEmpty()
-        ? rootName(tab.doc->tree, tab.ctrl->viewRootId())
-        : QFileInfo(tab.doc->filePath).fileName();
-
-    buildWorkspaceModel(m_workspaceModel, tab.doc->tree, tabName,
-                        static_cast<void*>(sub));
-    m_workspaceTree->expandAll();
+    QVector<rcx::TabInfo> tabs;
+    for (auto it = m_tabs.begin(); it != m_tabs.end(); ++it) {
+        TabState& tab = it.value();
+        QString name = tab.doc->filePath.isEmpty()
+            ? rootName(tab.doc->tree, tab.ctrl->viewRootId())
+            : QFileInfo(tab.doc->filePath).fileName();
+        tabs.append({ &tab.doc->tree, name, static_cast<void*>(it.key()) });
+    }
+    rcx::buildProjectExplorer(m_workspaceModel, tabs);
+    m_workspaceTree->expandToDepth(1);
 }
 
 void MainWindow::showPluginsDialog() {
