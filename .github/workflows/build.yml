@@ -47,7 +47,7 @@ jobs:
           path: |
             build/Reclass.exe
             build/ReclassMcpBridge.exe
-            build/Plugins/
+            build/Plugins/*.dll
             build/*.dll
             build/platforms/
             build/styles/
@@ -68,7 +68,8 @@ jobs:
           cp -r build/styles release/ 2>/dev/null || true
           cp -r build/imageformats release/ 2>/dev/null || true
           cp -r build/iconengines release/ 2>/dev/null || true
-          cp -r build/Plugins release/ 2>/dev/null || true
+          mkdir -p release/Plugins
+          cp build/Plugins/*.dll release/Plugins/ 2>/dev/null || true
           cp -r build/themes release/ 2>/dev/null || true
           cp build/screenshot.png release/ 2>/dev/null || true
           cd release && 7z a ../Reclass-win64.zip *
@@ -130,7 +131,8 @@ jobs:
           cp build/Reclass AppDir/usr/bin/
           cp build/ReclassMcpBridge AppDir/usr/bin/
           cp -r build/themes AppDir/usr/bin/ 2>/dev/null || true
-          cp -r build/Plugins AppDir/usr/bin/ 2>/dev/null || true
+          mkdir -p AppDir/usr/bin/Plugins
+          cp build/Plugins/*.so AppDir/usr/bin/Plugins/ 2>/dev/null || true
           cp src/icons/class.png AppDir/usr/share/icons/hicolor/256x256/apps/reclass.png
 
           # Create AppImage with Qt libs bundled
