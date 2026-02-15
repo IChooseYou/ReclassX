@@ -364,6 +364,8 @@ void MainWindow::createMenus() {
     file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
     file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
     file->addSeparator();
+    file->addAction(makeIcon(":/vsicons/close.svg"), "&Close", QKeySequence(Qt::CTRL | Qt::Key_W), this, &MainWindow::closeFile);
+    file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
     m_mcpAction = file->addAction(QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool() ? "Stop &MCP Server" : "Start &MCP Server", this, &MainWindow::toggleMcp);
@@ -836,6 +838,10 @@ void MainWindow::saveFile() {
 
 void MainWindow::saveFileAs() {
     project_save(nullptr, true);
+}
+
+void MainWindow::closeFile() {
+    project_close();
 }
 
 void MainWindow::addNode() {
@@ -1392,6 +1398,10 @@ QMdiSubWindow* MainWindow::project_open(const QString& path) {
         delete doc;
         return nullptr;
     }
+
+    // Close all existing tabs so the project replaces the current state
+    m_mdiArea->closeAllSubWindows();
+
     auto* sub = createTab(doc);
     rebuildWorkspaceModel();
     return sub;
@@ -1437,10 +1447,35 @@ void MainWindow::createWorkspaceDock() {
     m_workspaceTree->setExpandsOnDoubleClick(false);
     m_workspaceTree->setMouseTracking(true);
 
+    m_workspaceTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_workspaceTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QModelIndex index = m_workspaceTree->indexAt(pos);
+        if (!index.isValid()) return;
+
+        auto structIdVar = index.data(Qt::UserRole + 1);
+        uint64_t structId = structIdVar.isValid() ? structIdVar.toULongLong() : 0;
+        if (structId == 0 || structId == rcx::kGroupSentinel) return;
+
+        auto subVar = index.data(Qt::UserRole);
+        if (!subVar.isValid()) return;
+        auto* sub = static_cast<QMdiSubWindow*>(subVar.value<void*>());
+        if (!sub || !m_tabs.contains(sub)) return;
+
+        QMenu menu;
+        auto* deleteAction = menu.addAction(QIcon(":/vsicons/remove.svg"), "Delete");
+        if (menu.exec(m_workspaceTree->viewport()->mapToGlobal(pos)) == deleteAction) {
+            auto& tab = m_tabs[sub];
+            int ni = tab.doc->tree.indexOfId(structId);
+            if (ni >= 0) {
+                tab.ctrl->removeNode(ni);
+                rebuildWorkspaceModel();
+            }
+        }
+    });
+
     m_workspaceDock->setWidget(m_workspaceTree);
     addDockWidget(Qt::LeftDockWidgetArea, m_workspaceDock);
     m_workspaceDock->hide();
-
 
     connect(m_workspaceTree, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
         auto structIdVar = index.data(Qt::UserRole + 1);

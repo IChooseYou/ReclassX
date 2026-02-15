@@ -31,7 +31,7 @@ private slots:
     void openFile();
     void saveFile();
     void saveFileAs();
-
+    void closeFile();
 
     void addNode();
     void removeNode();

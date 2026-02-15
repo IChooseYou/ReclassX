@@ -89,7 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +106,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libgl1-mesa-dev
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libfuse2 libxcb-cursor0
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -119,23 +119,37 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
 
+      - name: Create AppImage
+        run: |
+          # Download linuxdeploy and Qt plugin
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+          # Build AppDir structure
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
+          cp build/Reclass AppDir/usr/bin/
+          cp build/ReclassMcpBridge AppDir/usr/bin/
+          cp -r build/themes AppDir/usr/bin/ 2>/dev/null || true
+          cp src/icons/class.png AppDir/usr/share/icons/hicolor/256x256/apps/reclass.png
+
+          # Create AppImage with Qt libs bundled
+          export QMAKE=$Qt6_DIR/bin/qmake
+          export LD_LIBRARY_PATH=$Qt6_DIR/lib:$LD_LIBRARY_PATH
+          export EXTRA_QT_PLUGINS="svg;iconengines"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --desktop-file deploy/Reclass.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/reclass.png \
+            --plugin qt \
+            --output appimage
+          mv Reclass-*.AppImage Reclass-x86_64.AppImage
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Reclass-Linux-x64
-          path: |
-            build/Reclass
-            build/ReclassMcpBridge
-
-      - name: Package release tarball
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          mkdir -p release
-          cp build/Reclass release/
-          cp build/ReclassMcpBridge release/
-          cp -r build/themes release/ 2>/dev/null || true
-          tar czf linux64-reclass-latest.tar.gz -C release .
+          path: Reclass-x86_64.AppImage
 
       - name: Update linux64 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -144,10 +158,11 @@ jobs:
           tag_name: latest-linux64
           name: linux64
           body: |
-            Linux x64 build from main branch.
+            Linux x64 AppImage build from main branch.
             Commit: ${{ github.sha }}
+            Run `chmod +x Reclass-x86_64.AppImage && ./Reclass-x86_64.AppImage`
           prerelease: true
-          files: linux64-reclass-latest.tar.gz
+          files: Reclass-x86_64.AppImage
           make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
