@@ -261,6 +261,12 @@ if(BUILD_TESTING)
     target_link_libraries(test_theme PRIVATE ${QT}::Widgets ${QT}::Test)
     add_test(NAME test_theme COMMAND test_theme)
 
+    add_executable(test_options_dialog tests/test_options_dialog.cpp
+        src/optionsdialog.cpp src/themes/theme.cpp src/themes/thememanager.cpp)
+    target_include_directories(test_options_dialog PRIVATE src)
+    target_link_libraries(test_options_dialog PRIVATE ${QT}::Widgets ${QT}::Test)
+    add_test(NAME test_options_dialog COMMAND test_options_dialog)
+
     if(WIN32)
         add_executable(test_windbg_provider tests/test_windbg_provider.cpp
             plugins/WinDbgMemory/WinDbgMemoryPlugin.cpp)

@@ -220,8 +220,8 @@ static void applyGlobalTheme(const rcx::Theme& theme) {
     pal.setColor(QPalette::Text,            theme.text);
     pal.setColor(QPalette::Button,          theme.button);
     pal.setColor(QPalette::ButtonText,      theme.text);
-    pal.setColor(QPalette::Highlight,       theme.hover);
-    pal.setColor(QPalette::HighlightedText, theme.indHoverSpan);
+    pal.setColor(QPalette::Highlight,       theme.selection);
+    pal.setColor(QPalette::HighlightedText, theme.text);
     pal.setColor(QPalette::ToolTipBase,     theme.backgroundAlt);
     pal.setColor(QPalette::ToolTipText,     theme.text);
     pal.setColor(QPalette::Mid,             theme.border);
@@ -313,8 +313,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Restore menu bar title case setting (after menus are created)
     {
-        bool titleCase = QSettings("Reclass", "Reclass").value("menuBarTitleCase", true).toBool();
-        m_titleBar->setMenuBarTitleCase(titleCase);
+        QSettings s("Reclass", "Reclass");
+        m_titleBar->setMenuBarTitleCase(s.value("menuBarTitleCase", true).toBool());
+        if (s.value("showIcon", false).toBool())
+            m_titleBar->setShowIcon(true);
     }
 
     // MenuBarStyle is set as app style in main() — covers both QMenuBar and QMenu
@@ -422,15 +424,6 @@ void MainWindow::createMenus() {
     themeMenu->addAction("Edit Theme...", this, &MainWindow::editTheme);
 
     view->addSeparator();
-    auto* actShowIcon = view->addAction("Show &Icon");
-    actShowIcon->setCheckable(true);
-    actShowIcon->setChecked(settings.value("showIcon", false).toBool());
-    if (actShowIcon->isChecked()) m_titleBar->setShowIcon(true);
-    connect(actShowIcon, &QAction::toggled, this, [this](bool checked) {
-        m_titleBar->setShowIcon(checked);
-        QSettings s("Reclass", "Reclass");
-        s.setValue("showIcon", checked);
-    });
     view->addAction(m_workspaceDock->toggleViewAction());
 
     // Node
@@ -1048,6 +1041,7 @@ void MainWindow::showOptionsDialog() {
     current.themeIndex = tm.currentIndex();
     current.fontName = QSettings("Reclass", "Reclass").value("font", "JetBrains Mono").toString();
     current.menuBarTitleCase = m_titleBar->menuBarTitleCase();
+    current.showIcon = QSettings("Reclass", "Reclass").value("showIcon", false).toBool();
     current.safeMode = QSettings("Reclass", "Reclass").value("safeMode", false).toBool();
     current.autoStartMcp = QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool();
 
@@ -1065,6 +1059,11 @@ void MainWindow::showOptionsDialog() {
     if (r.menuBarTitleCase != current.menuBarTitleCase) {
         m_titleBar->setMenuBarTitleCase(r.menuBarTitleCase);
         QSettings("Reclass", "Reclass").setValue("menuBarTitleCase", r.menuBarTitleCase);
+    }
+
+    if (r.showIcon != current.showIcon) {
+        m_titleBar->setShowIcon(r.showIcon);
+        QSettings("Reclass", "Reclass").setValue("showIcon", r.showIcon);
     }
 
     if (r.safeMode != current.safeMode)

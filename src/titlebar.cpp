@@ -122,6 +122,8 @@ void TitleBarWidget::setMenuBarTitleCase(bool titleCase) {
         clean.remove('&');
 
         if (titleCase) {
+            action->setText("&" + clean.toUpper());
+        } else {
             QString result;
             bool capitalizeNext = true;
             for (int i = 0; i < clean.length(); ++i) {
@@ -135,8 +137,6 @@ void TitleBarWidget::setMenuBarTitleCase(bool titleCase) {
                 }
             }
             action->setText("&" + result);
-        } else {
-            action->setText("&" + clean.toUpper());
         }
     }
 }

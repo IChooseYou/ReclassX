@@ -1,5 +1,4 @@
 #pragma once
-#include "themes/theme.h"
 #include <QDialog>
 #include <QLineEdit>
 #include <QTreeWidget>
@@ -7,7 +6,6 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QHash>
-#include <QColor>
 
 namespace rcx {
 
@@ -15,6 +13,7 @@ struct OptionsResult {
     int     themeIndex = 0;
     QString fontName;
     bool    menuBarTitleCase = true;
+    bool    showIcon = false;
     bool    safeMode = false;
     bool    autoStartMcp = false;
 };
@@ -26,9 +25,6 @@ public:
 
     OptionsResult result() const;
 
-protected:
-    bool eventFilter(QObject* obj, QEvent* event) override;
-
 private:
     void filterTree(const QString& text);
     static QStringList collectPageKeywords(QWidget* page);
@@ -39,10 +35,9 @@ private:
     QComboBox*      m_themeCombo     = nullptr;
     QComboBox*      m_fontCombo      = nullptr;
     QCheckBox*      m_titleCaseCheck = nullptr;
+    QCheckBox*      m_showIconCheck  = nullptr;
     QCheckBox*      m_safeModeCheck  = nullptr;
     QCheckBox*      m_autoMcpCheck   = nullptr;
-
-    QColor m_shadowColor;
 
     // searchable keywords per leaf tree item
     QHash<QTreeWidgetItem*, QStringList> m_pageKeywords;
