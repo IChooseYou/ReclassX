@@ -142,7 +142,9 @@ public:
             if ((w->windowFlags() & Qt::Window) == Qt::Window
                 && !w->property("DarkTitleBar").toBool()) {
                 w->setProperty("DarkTitleBar", true);
+#ifdef _WIN32
                 setDarkTitleBar(w);
+#endif
             }
         }
         return QApplication::notify(receiver, event);
@@ -355,12 +357,12 @@ QIcon MainWindow::makeIcon(const QString& svgPath) {
 void MainWindow::createMenus() {
     // File
     auto* file = m_titleBar->menuBar()->addMenu("&File");
-    file->addAction("&New", this, &MainWindow::newDocument, QKeySequence::New);
-    file->addAction("New &Tab", this, &MainWindow::newFile, QKeySequence(Qt::CTRL | Qt::Key_T));
-    file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", this, &MainWindow::openFile, QKeySequence::Open);
+    file->addAction("&New", QKeySequence::New, this, &MainWindow::newDocument);
+    file->addAction("New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::newFile);
+    file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", QKeySequence::Open, this, &MainWindow::openFile);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", this, &MainWindow::saveFile, QKeySequence::Save);
-    file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", this, &MainWindow::saveFileAs, QKeySequence::SaveAs);
+    file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
+    file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
@@ -368,12 +370,12 @@ void MainWindow::createMenus() {
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/settings-gear.svg"), "&Options...", this, &MainWindow::showOptionsDialog);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", this, &QMainWindow::close, QKeySequence(Qt::Key_Close));
+    file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", QKeySequence(Qt::Key_Close), this, &QMainWindow::close);
 
     // Edit
     auto* edit = m_titleBar->menuBar()->addMenu("&Edit");
-    edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", this, &MainWindow::undo, QKeySequence::Undo);
-    edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", this, &MainWindow::redo, QKeySequence::Redo);
+    edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
+    edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
     edit->addSeparator();
     edit->addAction("&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
 
@@ -431,10 +433,10 @@ void MainWindow::createMenus() {
 
     // Node
     auto* node = m_titleBar->menuBar()->addMenu("&Node");
-    node->addAction(makeIcon(":/vsicons/add.svg"), "&Add Field", this, &MainWindow::addNode, QKeySequence(Qt::Key_Insert));
-    node->addAction(makeIcon(":/vsicons/remove.svg"), "&Remove Field", this, &MainWindow::removeNode, QKeySequence::Delete);
-    node->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "Change &Type", this, &MainWindow::changeNodeType, QKeySequence(Qt::Key_T));
-    node->addAction(makeIcon(":/vsicons/edit.svg"), "Re&name", this, &MainWindow::renameNodeAction, QKeySequence(Qt::Key_F2));
+    node->addAction(makeIcon(":/vsicons/add.svg"), "&Add Field", QKeySequence(Qt::Key_Insert), this, &MainWindow::addNode);
+    node->addAction(makeIcon(":/vsicons/remove.svg"), "&Remove Field", QKeySequence::Delete, this, &MainWindow::removeNode);
+    node->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "Change &Type", QKeySequence(Qt::Key_T), this, &MainWindow::changeNodeType);
+    node->addAction(makeIcon(":/vsicons/edit.svg"), "Re&name", QKeySequence(Qt::Key_F2), this, &MainWindow::renameNodeAction);
     node->addAction(makeIcon(":/vsicons/files.svg"), "D&uplicate", this, &MainWindow::duplicateNodeAction)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
 
     // Plugins
