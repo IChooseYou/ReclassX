@@ -793,7 +793,7 @@ QJsonObject McpBridge::toolSourceSwitch(const QJsonObject& args) {
     }
 
     if (args.contains("pid")) {
-        uint32_t pid = (uint32_t)args.value("pid").toInteger();
+        uint32_t pid = (uint32_t)args.value("pid").toInt();
         QString name = args.value("processName").toString();
         if (name.isEmpty()) name = QString("PID %1").arg(pid);
         QString target = QString("%1:%2").arg(pid).arg(name);
