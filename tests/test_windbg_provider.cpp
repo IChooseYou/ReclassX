@@ -325,7 +325,7 @@ private slots:
         // Verify it's not all zeros (the old failure mode)
         bool allZero = true;
         for (int i = 0; i < data.size(); ++i) {
-            if (data[i] != 0) { allZero = false; break; }
+            if (data[i] != '\0') { allZero = false; break; }
         }
         QVERIFY2(!allZero, "Data is all zeros — background thread read failed");
     }
