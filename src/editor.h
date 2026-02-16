@@ -78,7 +78,7 @@ private:
     LayoutInfo        m_layout;  // cached from ComposeResult
 
     // ── Toggle: absolute vs relative offset margin
-    bool m_relativeOffsets = false;
+    bool m_relativeOffsets = true;
 
     int m_marginStyleBase = -1;
     int m_hintLine = -1;
