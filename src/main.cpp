@@ -809,6 +809,7 @@ void MainWindow::newDocument() {
 }
 
 void MainWindow::selfTest() {
+#ifdef Q_OS_WIN
     // Auto-open KUSER_SHARED_DATA example if available
     QString exPath = QCoreApplication::applicationDirPath()
                      + "/examples/KUSER_SHARED_DATA.rcx";
@@ -825,6 +826,9 @@ void MainWindow::selfTest() {
         QString target = QString("%1:Reclass.exe").arg(pid);
         ctrl->attachViaPlugin(QStringLiteral("processmemory"), target);
     }
+#else
+    project_new();
+#endif
 }
 
 void MainWindow::openFile() {
