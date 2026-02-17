@@ -54,9 +54,9 @@ Theme Theme::fromJson(const QJsonObject& o) {
             t.*kThemeFields[i].ptr = QColor(o[kThemeFields[i].key].toString());
     }
     // Derive heat colors from the theme's own palette when keys are absent
-    // cold = keyword blue, warm = hover/string amber, hot = marker red
+    // cold = muted yellow, warm = hover/string amber, hot = marker red
     if (!t.indHeatCold.isValid())
-        t.indHeatCold = t.syntaxKeyword;
+        t.indHeatCold = QColor("#D4A945");
     if (!t.indHeatWarm.isValid())
         t.indHeatWarm = t.indHoverSpan.isValid() ? t.indHoverSpan : t.syntaxString;
     if (!t.indHeatHot.isValid())

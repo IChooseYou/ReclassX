@@ -336,6 +336,7 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
             m_arrayCountEdit->setVisible(id == 3);
             if (id == 3) m_arrayCountEdit->setFocus();
             updateModifierPreview();
+            applyFilter(m_filterEdit->text());
         });
         connect(m_arrayCountEdit, &QLineEdit::textChanged,
                 this, [this]() { updateModifierPreview(); });
@@ -562,6 +563,10 @@ void TypeSelectorPopup::applyFilter(const QString& text) {
 
     QString filterBase = text.trimmed();
 
+    // Hide primitives when a pointer modifier (* or **) is active
+    int modId = m_modGroup->checkedId();
+    bool hideprimitives = (modId == 1 || modId == 2);
+
     // Separate primitives and composites
     QVector<TypeEntry> primitives, composites;
     for (const auto& t : m_allTypes) {
@@ -571,9 +576,10 @@ void TypeSelectorPopup::applyFilter(const QString& text) {
             || t.classKeyword.contains(filterBase, Qt::CaseInsensitive);
         if (!matchesFilter) continue;
 
-        if (t.entryKind == TypeEntry::Primitive)
-            primitives.append(t);
-        else if (t.entryKind == TypeEntry::Composite)
+        if (t.entryKind == TypeEntry::Primitive) {
+            if (!hideprimitives)
+                primitives.append(t);
+        } else if (t.entryKind == TypeEntry::Composite)
             composites.append(t);
     }
 

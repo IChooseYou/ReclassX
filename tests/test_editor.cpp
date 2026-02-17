@@ -999,6 +999,144 @@ private slots:
                  "Root header should be suppressed from compose output");
     }
 
+    // ── Test: command row hover indicator survives refresh cycle ──
+    void testCommandRowHoverSurvivesRefresh() {
+        // IND_HOVER_SPAN = 11 (defined in editor.cpp, replicate for test)
+        constexpr int IND_HOVER_SPAN = 11;
+
+        m_editor->applyDocument(m_result);
+
+        // Set command row text (simulates controller.updateCommandRow)
+        QString cmdText = QStringLiteral(
+            "source\u25BE \u00B7 0xD87B5E5000 \u00B7 struct\u25BE _PEB64 {");
+        m_editor->setCommandRowText(cmdText);
+        QApplication::processEvents();
+
+        // Parse the source span on line 0
+        auto* sci = m_editor->scintilla();
+        int len = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)0);
+        QVERIFY(len > 0);
+        QByteArray buf(len + 1, '\0');
+        sci->SendScintilla(QsciScintillaBase::SCI_GETLINE, (unsigned long)0,
+                           (void*)buf.data());
+        QString lineText = QString::fromUtf8(buf.constData(), len);
+        while (lineText.endsWith('\n') || lineText.endsWith('\r'))
+            lineText.chop(1);
+
+        ColumnSpan srcSpan = commandRowSrcSpan(lineText);
+        QVERIFY2(srcSpan.valid, "Source span should be valid on command row");
+
+        // Programmatically move mouse to the source span
+        int hoverCol = srcSpan.start + 1;
+        QPoint hoverPos = colToViewport(sci, 0, hoverCol);
+        sendMouseMove(sci->viewport(), hoverPos);
+        QApplication::processEvents();
+
+        // Verify IND_HOVER_SPAN is set at the hover position
+        long pos = sci->SendScintilla(QsciScintillaBase::SCI_FINDCOLUMN,
+                                      (unsigned long)0, (long)hoverCol);
+        sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT,
+                           (unsigned long)IND_HOVER_SPAN);
+        int valBefore = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_INDICATORVALUEAT,
+            (unsigned long)IND_HOVER_SPAN, pos);
+        QVERIFY2(valBefore != 0,
+                 "IND_HOVER_SPAN should be set on source span after hover");
+
+        // Verify cursor is PointingHand (Source target = clickable)
+        QCOMPARE(viewportCursor(m_editor), Qt::PointingHandCursor);
+
+        // ── Simulate a full refresh cycle (same order as controller.refresh) ──
+        ViewState vs = m_editor->saveViewState();
+        m_editor->applyDocument(m_result);
+        m_editor->restoreViewState(vs);
+
+        // Cursor must NOT have flipped to Arrow during applyDocument
+        // (applyHoverCursor is not called prematurely on composed text)
+        QCOMPARE(viewportCursor(m_editor), Qt::PointingHandCursor);
+
+        // updateCommandRow() — replaces line 0 text
+        m_editor->setCommandRowText(cmdText);
+
+        // applySelectionOverlays() — must run AFTER updateCommandRow
+        m_editor->applySelectionOverlay(QSet<uint64_t>());
+        QApplication::processEvents();
+
+        // Re-query the position (text was replaced, byte offset may have shifted)
+        long posAfter = sci->SendScintilla(QsciScintillaBase::SCI_FINDCOLUMN,
+                                           (unsigned long)0, (long)hoverCol);
+        int valAfter = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_INDICATORVALUEAT,
+            (unsigned long)IND_HOVER_SPAN, posAfter);
+        QVERIFY2(valAfter != 0,
+                 "IND_HOVER_SPAN must survive refresh on command row "
+                 "(hover should not flicker)");
+
+        // Cursor must still be PointingHand after full refresh cycle
+        QCOMPARE(viewportCursor(m_editor), Qt::PointingHandCursor);
+
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: command row hover survives multiple rapid refresh cycles ──
+    void testCommandRowHoverSurvivesRepeatedRefresh() {
+        constexpr int IND_HOVER_SPAN = 11;
+
+        m_editor->applyDocument(m_result);
+
+        QString cmdText = QStringLiteral(
+            "source\u25BE \u00B7 0xD87B5E5000 \u00B7 struct\u25BE _PEB64 {");
+        m_editor->setCommandRowText(cmdText);
+        QApplication::processEvents();
+
+        auto* sci = m_editor->scintilla();
+        int lineLen = (int)sci->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)0);
+        QByteArray buf(lineLen + 1, '\0');
+        sci->SendScintilla(QsciScintillaBase::SCI_GETLINE, (unsigned long)0,
+                           (void*)buf.data());
+        QString lineText = QString::fromUtf8(buf.constData(), lineLen);
+        while (lineText.endsWith('\n') || lineText.endsWith('\r'))
+            lineText.chop(1);
+
+        ColumnSpan srcSpan = commandRowSrcSpan(lineText);
+        QVERIFY(srcSpan.valid);
+        int hoverCol = srcSpan.start + 1;
+
+        // Move mouse into position
+        QPoint hoverPos = colToViewport(sci, 0, hoverCol);
+        sendMouseMove(sci->viewport(), hoverPos);
+        QApplication::processEvents();
+
+        // Simulate 5 rapid refresh cycles (like ~660ms timer x5)
+        for (int cycle = 0; cycle < 5; cycle++) {
+            ViewState vs = m_editor->saveViewState();
+            m_editor->applyDocument(m_result);
+            m_editor->restoreViewState(vs);
+            m_editor->setCommandRowText(cmdText);
+            m_editor->applySelectionOverlay(QSet<uint64_t>());
+
+            // Re-send mouse move each cycle (mouse is still there physically)
+            sendMouseMove(sci->viewport(), hoverPos);
+            QApplication::processEvents();
+
+            long pos = sci->SendScintilla(QsciScintillaBase::SCI_FINDCOLUMN,
+                                          (unsigned long)0, (long)hoverCol);
+            int val = (int)sci->SendScintilla(
+                QsciScintillaBase::SCI_INDICATORVALUEAT,
+                (unsigned long)IND_HOVER_SPAN, pos);
+            QVERIFY2(val != 0,
+                     qPrintable(QString(
+                         "IND_HOVER_SPAN lost on refresh cycle %1").arg(cycle)));
+            QVERIFY2(viewportCursor(m_editor) == Qt::PointingHandCursor,
+                     qPrintable(QString(
+                         "Cursor flipped away from PointingHand on cycle %1").arg(cycle)));
+        }
+
+        m_editor->applyDocument(m_result);
+    }
+
     // ── Test: MenuBarStyle gives QMenu items generous click targets ──
     // ── Test: M_ACCENT marker appears on selected rows ──
     void testAccentMarkerOnSelectedRows() {
@@ -1115,6 +1253,157 @@ private slots:
         QVERIFY2(styled.height() >= base.height() + 4,
                  qPrintable(QString("Menu item height %1 too short (base %2, need +4)")
                      .arg(styled.height()).arg(base.height())));
+    }
+
+    // ── Test: non-hex nodes don't show false heat coloring after offset shift ──
+    void testDeleteClearsHeatOnShiftedNodes() {
+        // Heat indicator constants (replicated from editor.cpp)
+        constexpr int IND_HEAT_COLD = 13;
+        constexpr int IND_HEAT_WARM = 17;
+        constexpr int IND_HEAT_HOT  = 18;
+
+        // Build a small tree: root struct with mixed regular (non-hex) + hex fields
+        NodeTree tree;
+        tree.baseAddress = 0x1000;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.structTypeName = "SmallStruct";
+        root.name = "s";
+        root.parentId = 0;
+        root.offset = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // field0: UInt32  at offset  0 (4 bytes) — will be deleted
+        // field1: UInt32  at offset  4 (4 bytes) — regular type, will shift
+        // field2: Float   at offset  8 (4 bytes) — regular type, will shift
+        // field3: Hex32   at offset 12 (4 bytes) — hex type, will shift
+        struct FieldDef { int off; NodeKind kind; const char* name; };
+        FieldDef defs[] = {
+            { 0, NodeKind::UInt32, "count"},
+            { 4, NodeKind::UInt32, "flags"},
+            { 8, NodeKind::Float,  "speed"},
+            {12, NodeKind::Hex32,  "raw"},
+        };
+        QVector<uint64_t> fieldIds;
+        for (auto& d : defs) {
+            Node n;
+            n.kind = d.kind;
+            n.name = d.name;
+            n.parentId = rootId;
+            n.offset = d.off;
+            int idx = tree.addNode(n);
+            fieldIds.append(tree.nodes[idx].id);
+        }
+
+        // Create a provider with 16 bytes of recognizable data
+        QByteArray data(16, '\0');
+        uint32_t v0 = 42;       memcpy(data.data() + 0,  &v0, 4);  // count=42
+        uint32_t v1 = 0xFF;     memcpy(data.data() + 4,  &v1, 4);  // flags=255
+        float    v2 = 3.14f;    memcpy(data.data() + 8,  &v2, 4);  // speed=3.14
+        uint32_t v3 = 0xCAFE;   memcpy(data.data() + 12, &v3, 4);  // raw=0xCAFE
+        BufferProvider prov(data);
+
+        // Compose the initial document
+        ComposeResult result = compose(tree, prov);
+
+        // Inject heatLevel=2 (warm) on field1, field2, field3 — simulates
+        // heat accumulated before the delete
+        for (auto& lm : result.meta) {
+            for (int i = 1; i <= 3; i++) {
+                if (lm.nodeId == fieldIds[i])
+                    lm.heatLevel = 2;
+            }
+        }
+
+        // Apply to editor — heat indicators should appear
+        m_editor->applyDocument(result);
+        QApplication::processEvents();
+
+        auto* sci = m_editor->scintilla();
+
+        // Helper: check if any heat indicator is set anywhere on a line
+        auto hasHeatOnLine = [&](int line) -> bool {
+            int lineLen = (int)sci->SendScintilla(
+                QsciScintillaBase::SCI_LINELENGTH, (unsigned long)line);
+            long lineStart = sci->SendScintilla(
+                QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)line);
+            for (long pos = lineStart; pos < lineStart + lineLen; pos++) {
+                for (int ind : { IND_HEAT_COLD, IND_HEAT_WARM, IND_HEAT_HOT }) {
+                    int val = (int)sci->SendScintilla(
+                        QsciScintillaBase::SCI_INDICATORVALUEAT,
+                        (unsigned long)ind, pos);
+                    if (val != 0) return true;
+                }
+            }
+            return false;
+        };
+
+        // Find lines for each shifted field
+        auto findFieldLine = [&](const ComposeResult& cr, uint64_t nodeId) -> int {
+            for (int i = 0; i < cr.meta.size(); i++) {
+                if (cr.meta[i].nodeId == nodeId && cr.meta[i].lineKind == LineKind::Field)
+                    return i;
+            }
+            return -1;
+        };
+
+        int line1 = findFieldLine(result, fieldIds[1]);
+        int line2 = findFieldLine(result, fieldIds[2]);
+        int line3 = findFieldLine(result, fieldIds[3]);
+        QVERIFY(line1 >= 0);
+        QVERIFY(line2 >= 0);
+        QVERIFY(line3 >= 0);
+
+        // Verify heat indicators ARE present (UInt32, Float, and Hex32)
+        QVERIFY2(hasHeatOnLine(line1),
+                 "Heat should be present on UInt32 'flags' before delete");
+        QVERIFY2(hasHeatOnLine(line2),
+                 "Heat should be present on Float 'speed' before delete");
+        QVERIFY2(hasHeatOnLine(line3),
+                 "Heat should be present on Hex32 'raw' before delete");
+
+        // ── Simulate delete of field0 (UInt32 'count' at offset 0) ──
+        int field0Idx = tree.indexOfId(fieldIds[0]);
+        QVERIFY(field0Idx >= 0);
+        tree.nodes.remove(field0Idx);
+        tree.invalidateIdCache();
+
+        // Shift remaining fields' offsets down by 4
+        for (int i = 1; i <= 3; i++) {
+            int fi = tree.indexOfId(fieldIds[i]);
+            if (fi >= 0) tree.nodes[fi].offset -= 4;
+        }
+
+        // Recompose — heatLevel defaults to 0 (simulates cleared history)
+        ComposeResult afterResult = compose(tree, prov);
+
+        // Apply the post-delete document to the editor
+        m_editor->applyDocument(afterResult);
+        QApplication::processEvents();
+
+        // Find new line positions
+        int newLine1 = findFieldLine(afterResult, fieldIds[1]);
+        int newLine2 = findFieldLine(afterResult, fieldIds[2]);
+        int newLine3 = findFieldLine(afterResult, fieldIds[3]);
+        QVERIFY(newLine1 >= 0);
+        QVERIFY(newLine2 >= 0);
+        QVERIFY(newLine3 >= 0);
+
+        // After applying heatLevel=0, NO heat indicators should appear
+        QVERIFY2(!hasHeatOnLine(newLine1),
+                 "UInt32 'flags' should NOT show heat after offset shift "
+                 "(old values are from wrong address)");
+        QVERIFY2(!hasHeatOnLine(newLine2),
+                 "Float 'speed' should NOT show heat after offset shift "
+                 "(old values are from wrong address)");
+        QVERIFY2(!hasHeatOnLine(newLine3),
+                 "Hex32 'raw' should NOT show heat after offset shift "
+                 "(old values are from wrong address)");
+
+        // Restore original document
+        m_editor->applyDocument(m_result);
     }
 
     void testMenuHoverRendersAmberText() {

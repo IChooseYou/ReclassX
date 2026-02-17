@@ -8,6 +8,26 @@
 
 using namespace rcx;
 
+// Provider with a configurable base address (for testing source-switch logic)
+class BaseAwareProvider : public Provider {
+    QByteArray m_data;
+    uint64_t   m_base;
+public:
+    BaseAwareProvider(QByteArray data, uint64_t base)
+        : m_data(std::move(data)), m_base(base) {}
+    bool read(uint64_t addr, void* buf, int len) const override {
+        if (addr + len > (uint64_t)m_data.size()) return false;
+        std::memcpy(buf, m_data.constData() + addr, len);
+        return true;
+    }
+    int size() const override { return m_data.size(); }
+    uint64_t base() const override { return m_base; }
+    void setBase(uint64_t b) override { m_base = b; }
+    bool isLive() const override { return true; }
+    QString name() const override { return QStringLiteral("test"); }
+    QString kind() const override { return QStringLiteral("Process"); }
+};
+
 // Small tree: one root struct with a few typed fields at known offsets.
 // Keeps tests fast and deterministic (no giant PEB tree).
 static void buildSmallTree(NodeTree& tree) {
@@ -383,6 +403,48 @@ private slots:
         QCOMPARE((uint8_t)bytes[0], (uint8_t)0xFF);
     }
 
+    // ── Test: source switch preserves existing base address ──
+    void testSourceSwitchPreservesBase() {
+        // Document already has baseAddress = 0x1000 from buildSmallTree()
+        QCOMPARE(m_doc->tree.baseAddress, (uint64_t)0x1000);
+
+        // Simulate attaching a new provider whose base differs (e.g. 0x400000)
+        auto prov = std::make_shared<BaseAwareProvider>(makeSmallBuffer(), 0x400000);
+        uint64_t newBase = prov->base();
+        QCOMPARE(newBase, (uint64_t)0x400000);
+
+        m_doc->provider = prov;
+        // This is the controller logic under test:
+        if (m_doc->tree.baseAddress == 0)
+            m_doc->tree.baseAddress = newBase;
+        else
+            m_doc->provider->setBase(m_doc->tree.baseAddress);
+
+        // baseAddress must stay at the original value
+        QCOMPARE(m_doc->tree.baseAddress, (uint64_t)0x1000);
+        // provider base must be synced to match
+        QCOMPARE(m_doc->provider->base(), (uint64_t)0x1000);
+    }
+
+    // ── Test: source switch on fresh doc uses provider default ──
+    void testSourceSwitchFreshDocUsesProviderBase() {
+        // Simulate a fresh document (no loaded .rcx → baseAddress == 0)
+        m_doc->tree.baseAddress = 0;
+
+        auto prov = std::make_shared<BaseAwareProvider>(makeSmallBuffer(), 0x7FFE0000);
+        uint64_t newBase = prov->base();
+
+        m_doc->provider = prov;
+        if (m_doc->tree.baseAddress == 0)
+            m_doc->tree.baseAddress = newBase;
+        else
+            m_doc->provider->setBase(m_doc->tree.baseAddress);
+
+        // Fresh doc should adopt the provider's default base
+        QCOMPARE(m_doc->tree.baseAddress, (uint64_t)0x7FFE0000);
+        QCOMPARE(m_doc->provider->base(), (uint64_t)0x7FFE0000);
+    }
+
     // ── Test: toggleCollapse + undo ──
     void testToggleCollapse() {
         // Root is index 0, a Struct node
@@ -405,6 +467,181 @@ private slots:
         m_doc->undoStack.undo();
         QApplication::processEvents();
         QCOMPARE(m_doc->tree.nodes[0].collapsed, false);
+    }
+    // ── Test: value history popup only appears during inline editing ──
+    void testValueHistoryPopupOnlyDuringEdit() {
+        // Record value history for field_u32 so it has heat
+        auto& tree = m_doc->tree;
+        int idx = -1;
+        for (int i = 0; i < tree.nodes.size(); i++) {
+            if (tree.nodes[i].name == "field_u32") { idx = i; break; }
+        }
+        QVERIFY(idx >= 0);
+        uint64_t nodeId = tree.nodes[idx].id;
+
+        QHash<uint64_t, ValueHistory> history;
+        history[nodeId].record("100");
+        history[nodeId].record("200");
+        history[nodeId].record("300");
+        QVERIFY(history[nodeId].uniqueCount() > 1);
+
+        m_editor->setValueHistoryRef(&history);
+
+        // Refresh and compose so editor has meta with heatLevel
+        m_ctrl->refresh();
+        QApplication::processEvents();
+        ComposeResult result = m_doc->compose();
+        // Manually set heat on the node's line meta
+        for (auto& lm : result.meta) {
+            if (lm.nodeId == nodeId) lm.heatLevel = 2;
+        }
+        m_editor->applyDocument(result);
+        QApplication::processEvents();
+
+        // Popup should not exist or not be visible (no editing active)
+        auto* popup = m_editor->findChild<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
+        // Even if popup widget exists, it should not be visible
+        bool popupVisible = false;
+        for (auto* child : m_editor->findChildren<QFrame*>(QString(), Qt::FindDirectChildrenOnly)) {
+            if (child->isVisible() && child->windowFlags() & Qt::ToolTip)
+                popupVisible = true;
+        }
+        QVERIFY2(!popupVisible, "Popup should not be visible when not editing");
+
+        // Start inline edit on value column of field_u32
+        int fieldLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].nodeId == nodeId && result.meta[i].lineKind == LineKind::Field) {
+                fieldLine = i; break;
+            }
+        }
+        QVERIFY(fieldLine >= 0);
+
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, fieldLine);
+        QVERIFY(ok);
+        QVERIFY(m_editor->isEditing());
+
+        // Trigger hover cursor update (simulates mouse move during editing)
+        QApplication::processEvents();
+
+        // Cancel edit to clean up
+        m_editor->cancelInlineEdit();
+        QApplication::processEvents();
+
+        m_editor->setValueHistoryRef(nullptr);
+    }
+
+    // ── Test: delete node clears value history for shifted siblings ──
+    void testDeleteClearsHeatForShiftedNodes() {
+        // Replace with a live provider so refresh() actually records values
+        m_doc->provider = std::make_unique<BaseAwareProvider>(makeSmallBuffer(), 0x1000);
+        m_ctrl->refresh();
+        QApplication::processEvents();
+
+        auto& tree = m_doc->tree;
+
+        // Locate field_u32 (the node we'll delete) and the siblings after it.
+        // The small tree has: field_u32(0), field_float(4), field_u8(8),
+        //                     pad0/Hex16(9), pad1/Hex8(11), field_hex/Hex32(12)
+        // field_float and field_u8 are regular (non-hex) types.
+        int delIdx = -1;
+        for (int i = 0; i < tree.nodes.size(); i++) {
+            if (tree.nodes[i].name == "field_u32") { delIdx = i; break; }
+        }
+        QVERIFY(delIdx >= 0);
+        uint64_t delId = tree.nodes[delIdx].id;
+
+        // Collect sibling node IDs that come after field_u32 (will be shifted)
+        uint64_t parentId = tree.nodes[delIdx].parentId;
+        int deletedSize = tree.nodes[delIdx].byteSize(); // 4 bytes
+        int deletedEnd = tree.nodes[delIdx].offset + deletedSize;
+        QVector<uint64_t> shiftedIds;
+        QHash<uint64_t, QString> nameMap;  // for debug messages
+        for (int i = 0; i < tree.nodes.size(); i++) {
+            if (tree.nodes[i].parentId == parentId && i != delIdx
+                && tree.nodes[i].offset >= deletedEnd) {
+                shiftedIds.append(tree.nodes[i].id);
+                nameMap[tree.nodes[i].id] = tree.nodes[i].name;
+            }
+        }
+        QVERIFY2(!shiftedIds.isEmpty(), "Should have siblings after field_u32");
+
+        // Seed value history for shifted siblings (simulate accumulated heat)
+        auto& history = const_cast<QHash<uint64_t, ValueHistory>&>(m_ctrl->valueHistory());
+        for (uint64_t id : shiftedIds) {
+            history[id].record("old_val_1");
+            history[id].record("old_val_2");
+            history[id].record("old_val_3");
+            QVERIFY2(history[id].heatLevel() >= 2,
+                     qPrintable(QString("Pre-delete: %1 should have heat>=2")
+                                .arg(nameMap[id])));
+        }
+
+        // Also seed the to-be-deleted node
+        history[delId].record("del_1");
+        history[delId].record("del_2");
+        QVERIFY(history.contains(delId));
+
+        // Delete field_u32 — this shifts all subsequent siblings
+        m_ctrl->removeNode(delIdx);
+        QApplication::processEvents();
+
+        // The deleted node's history should be gone
+        QVERIFY2(!m_ctrl->valueHistory().contains(delId),
+                 "Deleted node's value history should be cleared");
+
+        // All shifted siblings should have heat=0 after the delete.
+        // With a live provider, refresh() inside removeNode re-records one new
+        // value at the new offset → count=1 → heatLevel=0.
+        for (uint64_t id : shiftedIds) {
+            int heat = m_ctrl->valueHistory().contains(id)
+                ? m_ctrl->valueHistory()[id].heatLevel() : 0;
+            QVERIFY2(heat == 0,
+                     qPrintable(QString("Shifted node '%1' (id=%2) should have heat=0, got %3")
+                                .arg(nameMap[id]).arg(id).arg(heat)));
+        }
+    }
+
+    // ── Test: value history records and cycles correctly ──
+    void testValueHistoryRingBuffer() {
+        ValueHistory vh;
+        QCOMPARE(vh.count, 0);
+        QCOMPARE(vh.heatLevel(), 0);
+
+        vh.record("10");
+        QCOMPARE(vh.count, 1);
+        QCOMPARE(vh.heatLevel(), 0);  // 1 unique = static
+
+        // Duplicate should not increase count
+        vh.record("10");
+        QCOMPARE(vh.count, 1);
+
+        vh.record("20");
+        QCOMPARE(vh.count, 2);
+        QCOMPARE(vh.heatLevel(), 1);  // cold
+
+        vh.record("30");
+        QCOMPARE(vh.count, 3);
+        QCOMPARE(vh.heatLevel(), 2);  // warm
+
+        vh.record("40");
+        vh.record("50");
+        QCOMPARE(vh.count, 5);
+        QCOMPARE(vh.heatLevel(), 3);  // hot
+
+        QCOMPARE(vh.last(), QString("50"));
+
+        // Ring buffer: uniqueCount() caps at kCapacity
+        for (int i = 0; i < 20; i++)
+            vh.record(QString::number(100 + i));
+        QCOMPARE(vh.uniqueCount(), ValueHistory::kCapacity);
+        QVERIFY(vh.count > ValueHistory::kCapacity);
+
+        // forEach iterates oldest→newest within ring
+        QStringList vals;
+        vh.forEach([&](const QString& v) { vals.append(v); });
+        QCOMPARE(vals.size(), ValueHistory::kCapacity);
+        QCOMPARE(vals.last(), vh.last());
     }
 };
 

@@ -58,6 +58,29 @@ OptionsDialog::OptionsDialog(const OptionsResult& current, QWidget* parent)
     generalLayout->setContentsMargins(0, 0, 0, 0);
     generalLayout->setSpacing(8);
 
+    // Refresh Rate group box
+    auto* refreshGroup = new QGroupBox("Refresh Rate");
+    auto* refreshLayout = new QFormLayout(refreshGroup);
+    refreshLayout->setSpacing(8);
+    refreshLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+
+    m_refreshSpin = new QSpinBox;
+    m_refreshSpin->setRange(1, 60000);
+    m_refreshSpin->setSingleStep(50);
+    m_refreshSpin->setValue(current.refreshMs);
+    m_refreshSpin->setSuffix(" ms");
+    m_refreshSpin->setObjectName("refreshSpin");
+    refreshLayout->addRow("Interval:", m_refreshSpin);
+
+    auto* refreshDesc = new QLabel(
+        "How often live memory is re-read and the view is updated, in milliseconds. "
+        "Lower values give faster updates but use more CPU. Default: 660 ms.");
+    refreshDesc->setWordWrap(true);
+    refreshDesc->setContentsMargins(0, 0, 0, 0);
+    refreshLayout->addRow(refreshDesc);
+
+    generalLayout->addWidget(refreshGroup);
+
     // Visual Experience group box
     auto* visualGroup = new QGroupBox("Visual Experience");
     auto* visualLayout = new QFormLayout(visualGroup);
@@ -184,6 +207,7 @@ OptionsResult OptionsDialog::result() const {
     r.showIcon = m_showIconCheck->isChecked();
     r.safeMode = m_safeModeCheck->isChecked();
     r.autoStartMcp = m_autoMcpCheck->isChecked();
+    r.refreshMs = m_refreshSpin->value();
     return r;
 }
 

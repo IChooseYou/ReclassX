@@ -132,10 +132,10 @@ private:
 
     // ── Value history ref (owned by controller) ──
     const QHash<uint64_t, ValueHistory>* m_valueHistory = nullptr;
-    bool m_calltipVisible = false;
-    int  m_calltipLine = -1;
+    QWidget* m_historyPopup = nullptr;  // ValueHistoryPopup (file-local class in editor.cpp)
 
     // ── Reentrancy guards ──
+    bool m_applyingDocument = false;
     bool m_clampingSelection = false;
     bool m_updatingComment = false;
 

@@ -412,6 +412,18 @@ void MainWindow::createMenus() {
     Qt5Qt6AddAction(file, "Export ReClass &XML...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::exportReclassXmlAction);
     Qt5Qt6AddAction(file, "Import from &Source...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importFromSource);
     Qt5Qt6AddAction(file, "&Import ReClass XML...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importReclassXml);
+    // Examples submenu — scan once at init
+    {
+        QDir exDir(QCoreApplication::applicationDirPath() + "/examples");
+        QStringList rcxFiles = exDir.entryList({"*.rcx"}, QDir::Files, QDir::Name);
+        if (!rcxFiles.isEmpty()) {
+            auto* examples = file->addMenu("&Examples");
+            for (const QString& fn : rcxFiles) {
+                QString fullPath = exDir.absoluteFilePath(fn);
+                examples->addAction(fn, this, [this, fullPath]() { project_open(fullPath); });
+            }
+        }
+    }
     file->addSeparator();
     const auto itemName = QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool() ? "Stop &MCP Server" : "Start &MCP Server";
     m_mcpAction = Qt5Qt6AddAction(file, itemName, QKeySequence::UnknownKey, QIcon(), this, &MainWindow::toggleMcp);
@@ -732,77 +744,22 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
     return sub;
 }
 
-// Build Ball + Material demo structs into a tree
-static void buildBallDemo(NodeTree& tree) {
-    // Ball struct (128 bytes = 0x80)
-    Node ball;
-    ball.kind = NodeKind::Struct;
-    ball.name = "aBall";
-    ball.structTypeName = "Ball";
-    ball.parentId = 0;
-    ball.offset = 0;
-    int bi = tree.addNode(ball);
-    uint64_t ballId = tree.nodes[bi].id;
-
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_00";   n.parentId = ballId; n.offset = 0;  tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_08";   n.parentId = ballId; n.offset = 8;  tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Vec4;   n.name = "position";   n.parentId = ballId; n.offset = 16; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity";   n.parentId = ballId; n.offset = 32; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex32;  n.name = "field_2C";   n.parentId = ballId; n.offset = 44; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Float;  n.name = "speed";      n.parentId = ballId; n.offset = 48; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 52; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Float;  n.name = "radius";     n.parentId = ballId; n.offset = 56; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex32;  n.name = "field_3C";   n.parentId = ballId; n.offset = 60; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Float;  n.name = "mass";       n.parentId = ballId; n.offset = 64; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_44";   n.parentId = ballId; n.offset = 68; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";     n.parentId = ballId; n.offset = 76; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex8;   n.name = "field_4D";   n.parentId = ballId; n.offset = 77; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex16;  n.name = "field_4E";   n.parentId = ballId; n.offset = 78; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::UInt32; n.name = "color";      n.parentId = ballId; n.offset = 80; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex32;  n.name = "field_54";   n.parentId = ballId; n.offset = 84; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_58";   n.parentId = ballId; n.offset = 88; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64;  n.name = "field_60";   n.parentId = ballId; n.offset = 96; tree.addNode(n); }
-
-    // Material struct (renamed from Physics, 40 bytes = 0x28)
-    Node mat;
-    mat.kind = NodeKind::Struct;
-    mat.name = "aMaterial";
-    mat.structTypeName = "Material";
-    mat.parentId = 0;
-    mat.offset = 0;
-    int mi = tree.addNode(mat);
-    uint64_t matId = tree.nodes[mi].id;
-
-    { Node n; n.kind = NodeKind::Hex64; n.name = "field_00"; n.parentId = matId; n.offset = 0;  tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64; n.name = "field_08"; n.parentId = matId; n.offset = 8;  tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64; n.name = "field_10"; n.parentId = matId; n.offset = 16; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64; n.name = "field_18"; n.parentId = matId; n.offset = 24; tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex64; n.name = "field_20"; n.parentId = matId; n.offset = 32; tree.addNode(n); }
-
-    // Pointer to Material in Ball struct
-    { Node n; n.kind = NodeKind::Pointer64; n.name = "material"; n.parentId = ballId; n.offset = 104; n.refId = matId; n.collapsed = true; tree.addNode(n); }
-
-    // float[4] scores at offset 112
-    { Node n; n.kind = NodeKind::Array; n.name = "scores"; n.parentId = ballId; n.offset = 112; n.elementKind = NodeKind::Float; n.arrayLen = 4; tree.addNode(n); }
-
-    // Material[2] materials at offset 128 (112 + 16 for float[4])
-    { Node n; n.kind = NodeKind::Array; n.name = "materials"; n.parentId = ballId; n.offset = 128; n.elementKind = NodeKind::Struct; n.arrayLen = 2; n.refId = matId; tree.addNode(n); }
-
-    // Unnamed struct (128 bytes of hex64 fields)
-    Node unnamed;
-    unnamed.kind = NodeKind::Struct;
-    unnamed.name = "instance";
-    unnamed.structTypeName = "Unnamed";
-    unnamed.parentId = 0;
-    unnamed.offset = 0;
-    int ui = tree.addNode(unnamed);
-    uint64_t unnamedId = tree.nodes[ui].id;
+// Build a minimal empty struct for new documents
+static void buildEmptyStruct(NodeTree& tree) {
+    Node root;
+    root.kind = NodeKind::Struct;
+    root.name = "instance";
+    root.structTypeName = "Unnamed";
+    root.parentId = 0;
+    root.offset = 0;
+    int ri = tree.addNode(root);
+    uint64_t rootId = tree.nodes[ri].id;
 
     for (int i = 0; i < 16; i++) {
         Node n;
         n.kind = NodeKind::Hex64;
         n.name = QStringLiteral("field_%1").arg(i * 8, 2, 16, QChar('0'));
-        n.parentId = unnamedId;
+        n.parentId = rootId;
         n.offset = i * 8;
         tree.addNode(n);
     }
@@ -829,14 +786,12 @@ void MainWindow::newDocument() {
     doc->typeAliases.clear();
     doc->modified = false;
 
-    // Build Ball + Material structs
-    buildBallDemo(doc->tree);
+    buildEmptyStruct(doc->tree);
 
-    // Cross-platform writable buffer, zeroed (256 bytes covers Ball + spare)
     QByteArray data(256, '\0');
     doc->provider = std::make_shared<BufferProvider>(data);
 
-    // Focus on Ball struct
+    // Focus on first struct
     ctrl->setViewRootId(0);
     for (const auto& n : doc->tree.nodes) {
         if (n.parentId == 0 && n.kind == NodeKind::Struct) {
@@ -854,7 +809,22 @@ void MainWindow::newDocument() {
 }
 
 void MainWindow::selfTest() {
-    project_new();
+    // Auto-open KUSER_SHARED_DATA example if available
+    QString exPath = QCoreApplication::applicationDirPath()
+                     + "/examples/KUSER_SHARED_DATA.rcx";
+    if (QFile::exists(exPath)) {
+        project_open(exPath);
+    } else {
+        project_new();
+    }
+
+    // Auto-attach process memory plugin to self
+    auto* ctrl = activeController();
+    if (ctrl) {
+        DWORD pid = GetCurrentProcessId();
+        QString target = QString("%1:Reclass.exe").arg(pid);
+        ctrl->attachViaPlugin(QStringLiteral("processmemory"), target);
+    }
 }
 
 void MainWindow::openFile() {
@@ -1080,6 +1050,7 @@ void MainWindow::showOptionsDialog() {
     current.showIcon = QSettings("Reclass", "Reclass").value("showIcon", false).toBool();
     current.safeMode = QSettings("Reclass", "Reclass").value("safeMode", false).toBool();
     current.autoStartMcp = QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool();
+    current.refreshMs = QSettings("Reclass", "Reclass").value("refreshMs", 660).toInt();
 
     OptionsDialog dlg(current, this);
     if (dlg.exec() != QDialog::Accepted) return; // OptionsDialog doesn't apply anything. Only apply on OK
@@ -1107,6 +1078,12 @@ void MainWindow::showOptionsDialog() {
 
     if (r.autoStartMcp != current.autoStartMcp)
         QSettings("Reclass", "Reclass").setValue("autoStartMcp", r.autoStartMcp);
+
+    if (r.refreshMs != current.refreshMs) {
+        QSettings("Reclass", "Reclass").setValue("refreshMs", r.refreshMs);
+        for (auto& tab : m_tabs)
+            tab.ctrl->setRefreshInterval(r.refreshMs);
+    }
 }
 
 void MainWindow::setEditorFont(const QString& fontName) {
@@ -1510,13 +1487,11 @@ void MainWindow::showTypeAliasesDialog() {
 QMdiSubWindow* MainWindow::project_new() {
     auto* doc = new RcxDocument(this);
 
-    // Cross-platform writable buffer, zeroed (256 bytes covers Ball struct + spare)
     QByteArray data(256, '\0');
     doc->loadData(data);
     doc->tree.baseAddress = 0x00400000;
 
-    // Build Ball + Material demo structs
-    buildBallDemo(doc->tree);
+    buildEmptyStruct(doc->tree);
 
     auto* sub = createTab(doc);
     rebuildWorkspaceModel();

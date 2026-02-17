@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QGroupBox>
 #include <QLineEdit>
+#include <QSpinBox>
 #include <QLabel>
 #include "optionsdialog.h"
 #include "themes/thememanager.h"
@@ -220,6 +221,45 @@ private slots:
         search->setText("");
         QVERIFY(!generalItem->isHidden());
         QVERIFY(!aiItem->isHidden());
+    }
+
+    void refreshRateSpinBoxExists() {
+        OptionsResult defaults;
+        defaults.refreshMs = 660;
+        OptionsDialog dlg(defaults);
+
+        auto* spin = dlg.findChild<QSpinBox*>("refreshSpin");
+        QVERIFY(spin);
+        QCOMPARE(spin->value(), 660);
+        QCOMPARE(spin->minimum(), 1);
+        QCOMPARE(spin->maximum(), 60000);
+    }
+
+    void refreshRateResultReflectsInput() {
+        OptionsResult input;
+        input.refreshMs = 200;
+        OptionsDialog dlg(input);
+
+        auto r = dlg.result();
+        QCOMPARE(r.refreshMs, 200);
+
+        // Change via spin box
+        auto* spin = dlg.findChild<QSpinBox*>("refreshSpin");
+        QVERIFY(spin);
+        spin->setValue(100);
+        r = dlg.result();
+        QCOMPARE(r.refreshMs, 100);
+    }
+
+    void refreshRateClampsMin() {
+        OptionsResult input;
+        input.refreshMs = 0; // below minimum
+        OptionsDialog dlg(input);
+
+        auto* spin = dlg.findChild<QSpinBox*>("refreshSpin");
+        QVERIFY(spin);
+        // QSpinBox clamps to minimum
+        QCOMPARE(spin->value(), 1);
     }
 
     void dialogInheritsPalette() {

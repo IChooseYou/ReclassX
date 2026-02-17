@@ -113,6 +113,7 @@ public:
 
     RcxDocument* document() const { return m_doc; }
     void setEditorFont(const QString& fontName);
+    void setRefreshInterval(int ms);
 
     // MCP bridge accessors
     void setSuppressRefresh(bool v) { m_suppressRefresh = v; }
@@ -120,6 +121,9 @@ public:
     const QVector<SavedSourceEntry>& savedSources() const { return m_savedSources; }
     int activeSourceIndex() const { return m_activeSourceIdx; }
     void switchSource(int idx) { switchToSavedSource(idx); }
+
+    // Test accessor
+    const QHash<uint64_t, ValueHistory>& valueHistory() const { return m_valueHistory; }
 
 signals:
     void nodeSelected(int nodeIdx);

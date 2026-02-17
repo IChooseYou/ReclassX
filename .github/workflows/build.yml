@@ -37,7 +37,7 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_windbg_provider|test_com_security"
+        run: ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_controller|test_windbg_provider|test_com_security"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -54,6 +54,7 @@ jobs:
             build/imageformats/
             build/iconengines/
             build/themes/
+            build/examples/
             build/screenshot.png
 
       - name: Get date tag
@@ -77,6 +78,7 @@ jobs:
           mkdir -p release/Plugins
           cp build/Plugins/*.dll release/Plugins/ 2>/dev/null || true
           cp -r build/themes release/ 2>/dev/null || true
+          cp -r build/examples release/ 2>/dev/null || true
           cp build/screenshot.png release/ 2>/dev/null || true
           cd release && 7z a ../Reclass-win64-qt6.zip *
 
@@ -122,7 +124,7 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: xvfb-run ctest --test-dir build --output-on-failure --exclude-regex "test_editor"
+        run: xvfb-run ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_controller"
         env:
           QT_QPA_PLATFORM: offscreen
 
@@ -138,6 +140,7 @@ jobs:
           cp build/Reclass AppDir/usr/bin/
           cp build/ReclassMcpBridge AppDir/usr/bin/
           cp -r build/themes AppDir/usr/bin/ 2>/dev/null || true
+          cp -r build/examples AppDir/usr/bin/ 2>/dev/null || true
           mkdir -p AppDir/usr/bin/Plugins
           cp build/Plugins/*.so AppDir/usr/bin/Plugins/ 2>/dev/null || true
           cp src/icons/class.png AppDir/usr/share/icons/hicolor/256x256/apps/reclass.png

@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QHash>
+#include <QSpinBox>
 
 namespace rcx {
 
@@ -16,6 +17,7 @@ struct OptionsResult {
     bool    showIcon = false;
     bool    safeMode = false;
     bool    autoStartMcp = false;
+    int     refreshMs = 660;
 };
 
 class OptionsDialog : public QDialog {
@@ -38,6 +40,7 @@ private:
     QCheckBox*      m_showIconCheck  = nullptr;
     QCheckBox*      m_safeModeCheck  = nullptr;
     QCheckBox*      m_autoMcpCheck   = nullptr;
+    QSpinBox*       m_refreshSpin    = nullptr;
 
     // searchable keywords per leaf tree item
     QHash<QTreeWidgetItem*, QStringList> m_pageKeywords;

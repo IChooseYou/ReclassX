@@ -436,7 +436,10 @@ void RcxController::connectEditor(RcxEditor* editor) {
                             m_doc->undoStack.clear();
                             m_doc->provider = std::move(provider);
                             m_doc->dataPath.clear();
-                            m_doc->tree.baseAddress = newBase;
+                            if (m_doc->tree.baseAddress == 0)
+                                m_doc->tree.baseAddress = newBase;
+                            else
+                                m_doc->provider->setBase(m_doc->tree.baseAddress);
                             resetSnapshot();
                             emit m_doc->documentChanged();
 
@@ -634,12 +637,12 @@ void RcxController::refresh() {
     }
 
     // Update value history and compute heat levels
-    // Use the snapshot provider if active; skip entirely if no valid provider
+    // Only run when a live provider is attached (not for static file/buffer sources)
     {
         const Provider* prov = nullptr;
-        if (m_snapshotProv)
+        if (m_snapshotProv && m_snapshotProv->isLive())
             prov = m_snapshotProv.get();
-        else if (m_doc->provider && m_doc->provider->isValid())
+        else if (m_doc->provider && m_doc->provider->isValid() && m_doc->provider->isLive())
             prov = m_doc->provider.get();
 
         if (prov) {
@@ -651,11 +654,9 @@ void RcxController::refresh() {
                 const Node& node = m_doc->tree.nodes[lm.nodeIdx];
                 // Skip containers — they don't have scalar values
                 if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) continue;
-                // Skip hex preview nodes — they show raw bytes, not a single value
-                if (isHexPreview(node.kind)) continue;
 
                 int64_t nodeOff = m_doc->tree.computeOffset(lm.nodeIdx);
-                uint64_t addr = m_doc->tree.baseAddress + static_cast<uint64_t>(nodeOff);
+                uint64_t addr = static_cast<uint64_t>(nodeOff); // provider-relative
                 int sz = node.byteSize();
                 if (sz <= 0 || !prov->isReadable(addr, sz)) continue;
 
@@ -663,17 +664,6 @@ void RcxController::refresh() {
                 if (!val.isEmpty()) {
                     m_valueHistory[lm.nodeId].record(val);
                     lm.heatLevel = m_valueHistory[lm.nodeId].heatLevel();
-                }
-            }
-        }
-
-        // Apply persisted heat levels even when provider is unavailable
-        if (!prov) {
-            for (auto& lm : m_lastResult.meta) {
-                if (lm.nodeId != 0) {
-                    auto it = m_valueHistory.find(lm.nodeId);
-                    if (it != m_valueHistory.end())
-                        lm.heatLevel = it->heatLevel();
                 }
             }
         }
@@ -707,9 +697,11 @@ void RcxController::refresh() {
         editor->applyDocument(m_lastResult);
         editor->restoreViewState(vs);
     }
-    applySelectionOverlays();
+    // Text-modifying passes first (command row replaces line 0 text),
+    // then overlays last so hover indicators survive the refresh.
     pushSavedSourcesToEditors();
     updateCommandRow();
+    applySelectionOverlays();
 }
 
 void RcxController::changeNodeKind(int nodeIdx, NodeKind newKind) {
@@ -906,6 +898,23 @@ void RcxController::materializeRefChildren(int nodeIdx) {
 void RcxController::applyCommand(const Command& command, bool isUndo) {
     auto& tree = m_doc->tree;
 
+    // Clear value history for nodes whose effective offset changed.
+    // When offsets shift (insert/delete/resize), old recorded values came from
+    // a different memory address, so keeping them would show false heat.
+    // Also invalidates any in-flight async read so that stale snapshot data
+    // from before the offset change doesn't re-introduce false heat.
+    auto clearHistoryForAdjs = [&](const QVector<cmd::OffsetAdj>& adjs) {
+        if (adjs.isEmpty()) return;
+        m_refreshGen++;  // discard in-flight async read (stale layout)
+        for (const auto& adj : adjs) {
+            // Clear the adjusted node itself
+            m_valueHistory.remove(adj.nodeId);
+            // Clear all descendants (their effective address also shifted)
+            for (int ci : tree.subtreeIndices(adj.nodeId))
+                m_valueHistory.remove(tree.nodes[ci].id);
+        }
+    };
+
     std::visit([&](auto&& c) {
         using T = std::decay_t<decltype(c)>;
         if constexpr (std::is_same_v<T, cmd::ChangeKind>) {
@@ -917,6 +926,12 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 if (ai >= 0)
                     tree.nodes[ai].offset = isUndo ? adj.oldOffset : adj.newOffset;
             }
+            // The changed node's value format changed; clear its history.
+            // If offAdjs is empty (same-size change), still bump gen to
+            // discard in-flight reads that would record the old format.
+            if (c.offAdjs.isEmpty()) m_refreshGen++;
+            m_valueHistory.remove(c.nodeId);
+            clearHistoryForAdjs(c.offAdjs);
         } else if constexpr (std::is_same_v<T, cmd::Rename>) {
             int idx = tree.indexOfId(c.nodeId);
             if (idx >= 0)
@@ -945,6 +960,7 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                     if (ai >= 0) tree.nodes[ai].offset = adj.newOffset;
                 }
             }
+            clearHistoryForAdjs(c.offAdjs);
         } else if constexpr (std::is_same_v<T, cmd::Remove>) {
             if (isUndo) {
                 // Restore nodes first
@@ -970,6 +986,8 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 }
                 tree.invalidateIdCache();
             }
+            // Siblings shifted — their old values are from wrong addresses
+            clearHistoryForAdjs(c.offAdjs);
         } else if constexpr (std::is_same_v<T, cmd::ChangeBase>) {
             tree.baseAddress = isUndo ? c.oldBase : c.newBase;
             qDebug() << "[ChangeBase] tree.baseAddress =" << Qt::hex << tree.baseAddress
@@ -1016,6 +1034,11 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             int idx = tree.indexOfId(c.nodeId);
             if (idx >= 0)
                 tree.nodes[idx].offset = isUndo ? c.oldOffset : c.newOffset;
+            // Node and its descendants read from a different address now
+            m_refreshGen++;  // discard in-flight async read (stale layout)
+            m_valueHistory.remove(c.nodeId);
+            for (int ci : tree.subtreeIndices(c.nodeId))
+                m_valueHistory.remove(tree.nodes[ci].id);
         }
     }, command);
 
@@ -1494,8 +1517,8 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
         }
     }
 
-    applySelectionOverlays();
     updateCommandRow();
+    applySelectionOverlays();
 
     if (m_selIds.size() == 1) {
         uint64_t sid = *m_selIds.begin();
@@ -1508,8 +1531,8 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
 void RcxController::clearSelection() {
     m_selIds.clear();
     m_anchorLine = -1;
-    applySelectionOverlays();
     updateCommandRow();
+    applySelectionOverlays();
 }
 
 void RcxController::applySelectionOverlays() {
@@ -1750,7 +1773,7 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
 
     switch (mode) {
     case TypePopupMode::Root:
-        addPrimitives(/*enabled=*/false, /*excludeStructArrayPad=*/false);
+        // No primitives in Root mode – only project types are valid roots
         addComposites([&](const Node&, const TypeEntry& e) {
             return e.structId == m_viewRootId;
         });
@@ -2019,7 +2042,10 @@ void RcxController::attachViaPlugin(const QString& providerIdentifier, const QSt
     m_doc->undoStack.clear();
     m_doc->provider = std::move(provider);
     m_doc->dataPath.clear();
-    m_doc->tree.baseAddress = newBase;
+    if (m_doc->tree.baseAddress == 0)
+        m_doc->tree.baseAddress = newBase;
+    else
+        m_doc->provider->setBase(m_doc->tree.baseAddress);
     resetSnapshot();
     emit m_doc->documentChanged();
     refresh();
@@ -2062,9 +2088,15 @@ void RcxController::pushSavedSourcesToEditors() {
 
 // ── Auto-refresh ──
 
+void RcxController::setRefreshInterval(int ms) {
+    if (m_refreshTimer)
+        m_refreshTimer->setInterval(qMax(1, ms));
+}
+
 void RcxController::setupAutoRefresh() {
+    int ms = QSettings("Reclass", "Reclass").value("refreshMs", 660).toInt();
     m_refreshTimer = new QTimer(this);
-    m_refreshTimer->setInterval(660);
+    m_refreshTimer->setInterval(qMax(1, ms));
     connect(m_refreshTimer, &QTimer::timeout, this, &RcxController::onRefreshTick);
     m_refreshTimer->start();
 

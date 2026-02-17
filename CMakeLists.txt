@@ -101,6 +101,14 @@ foreach(_tf ${_theme_files})
     configure_file(${_tf} "${CMAKE_BINARY_DIR}/themes/${_name}" COPYONLY)
 endforeach()
 
+# Copy example .rcx files to build directory
+file(GLOB _example_files "${CMAKE_SOURCE_DIR}/src/examples/*.rcx")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
+foreach(_ef ${_example_files})
+    get_filename_component(_name ${_ef} NAME)
+    configure_file(${_ef} "${CMAKE_BINARY_DIR}/examples/${_name}" COPYONLY)
+endforeach()
+
 include(deploy)
 
 if(TARGET deploy)
@@ -217,6 +225,16 @@ if(BUILD_TESTING)
         target_link_libraries(test_context_menu PRIVATE dbghelp psapi ${_QT_WINEXTRAS})
     endif()
     add_test(NAME test_context_menu COMMAND test_context_menu)
+
+    add_executable(test_editor tests/test_editor.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp
+        src/providerregistry.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
+    target_include_directories(test_editor PRIVATE src)
+    target_link_libraries(test_editor PRIVATE
+        ${QT}::Widgets ${QT}::PrintSupport ${QT}::Test
+        QScintilla::QScintilla)
+    add_test(NAME test_editor COMMAND test_editor)
 
     add_executable(test_rendered_view tests/test_rendered_view.cpp
         src/generator.cpp src/compose.cpp src/format.cpp)

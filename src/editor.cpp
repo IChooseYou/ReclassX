@@ -5,6 +5,7 @@
 #include <Qsci/qsciscintillabase.h>
 #include <Qsci/qscilexercpp.h>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFont>
 #include <QColor>
 #include <QKeyEvent>
@@ -15,9 +16,141 @@
 #include <QMenu>
 #include <QApplication>
 #include <QClipboard>
+#include <QLabel>
+#include <QToolButton>
+#include <QScreen>
+#include <functional>
 #include "themes/thememanager.h"
 
 namespace rcx {
+
+// ── Value history popup (styled like TypeSelectorPopup) ──
+
+class ValueHistoryPopup : public QFrame {
+    uint64_t m_nodeId = 0;
+    bool     m_hasButtons = false;
+    QStringList m_values;
+    QVector<QLabel*> m_labels;
+    std::function<void(const QString&)> m_onSet;
+public:
+    explicit ValueHistoryPopup(QWidget* parent)
+        : QFrame(parent, Qt::ToolTip | Qt::FramelessWindowHint)
+    {
+        setAttribute(Qt::WA_DeleteOnClose, false);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setFrameShape(QFrame::NoFrame);
+        setAutoFillBackground(true);
+    }
+
+    uint64_t nodeId() const { return m_nodeId; }
+    void setOnSet(std::function<void(const QString&)> fn) { m_onSet = std::move(fn); }
+
+    void populate(uint64_t nodeId, const ValueHistory& hist, const QFont& font,
+                  bool showButtons = false) {
+        QStringList vals;
+        hist.forEach([&](const QString& v) { vals.append(v); });
+
+        if (nodeId == m_nodeId && vals == m_values
+            && showButtons == m_hasButtons && isVisible())
+            return;
+
+        // In-place label update when structure unchanged (avoids flicker)
+        if (nodeId == m_nodeId && vals.size() == m_values.size()
+            && vals.size() == m_labels.size()
+            && showButtons == m_hasButtons && isVisible()) {
+            for (int i = 0; i < vals.size(); i++)
+                m_labels[i]->setText(vals[i]);
+            m_values = vals;
+            return;
+        }
+
+        m_nodeId = nodeId;
+        m_values = vals;
+        m_hasButtons = showButtons;
+        m_labels.clear();
+
+        delete layout();
+        qDeleteAll(findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly));
+
+        const auto& theme = ThemeManager::instance().current();
+        QPalette pal;
+        pal.setColor(QPalette::Window, theme.backgroundAlt);
+        pal.setColor(QPalette::WindowText, theme.text);
+        setPalette(pal);
+
+        auto* vbox = new QVBoxLayout(this);
+        vbox->setContentsMargins(8, 6, 8, 6);
+        vbox->setSpacing(2);
+
+        auto* title = new QLabel(QStringLiteral("Previous Values"));
+        QFont bold = font;
+        bold.setBold(true);
+        title->setFont(bold);
+        title->setStyleSheet(QStringLiteral("color: %1;").arg(theme.text.name()));
+        vbox->addWidget(title);
+
+        auto* sep = new QFrame;
+        sep->setFrameShape(QFrame::HLine);
+        sep->setFrameShadow(QFrame::Plain);
+        sep->setFixedHeight(1);
+        QPalette sp; sp.setColor(QPalette::WindowText, theme.border);
+        sep->setPalette(sp);
+        vbox->addWidget(sep);
+
+        for (const QString& v : vals) {
+            auto* row = new QHBoxLayout;
+            row->setContentsMargins(0, 1, 0, 1);
+            row->setSpacing(8);
+
+            auto* label = new QLabel(v);
+            label->setFont(font);
+            label->setStyleSheet(QStringLiteral("color: %1;").arg(theme.syntaxNumber.name()));
+            row->addWidget(label, 1);
+            m_labels.append(label);
+
+            if (showButtons) {
+                auto* setBtn = new QToolButton;
+                setBtn->setText(QStringLiteral("Set"));
+                setBtn->setAutoRaise(true);
+                setBtn->setCursor(Qt::PointingHandCursor);
+                setBtn->setFont(font);
+                setBtn->setStyleSheet(QStringLiteral(
+                    "QToolButton { color: %1; border: none; padding: 1px 4px; }"
+                    "QToolButton:hover { color: %2; background: %3; }")
+                    .arg(theme.textDim.name(), theme.text.name(), theme.hover.name()));
+                QString val = v;
+                QObject::connect(setBtn, &QToolButton::clicked, [this, val]() {
+                    if (m_onSet) m_onSet(val);
+                });
+                row->addWidget(setBtn);
+            }
+            vbox->addLayout(row);
+        }
+
+        adjustSize();
+    }
+
+    void showAt(const QPoint& globalPos) {
+        if (isVisible()) return;
+        QSize sz = sizeHint();
+        QRect screen = QApplication::screenAt(globalPos)
+            ? QApplication::screenAt(globalPos)->availableGeometry()
+            : QRect(0, 0, 1920, 1080);
+        int x = qMin(globalPos.x(), screen.right() - sz.width());
+        int y = globalPos.y();
+        if (y + sz.height() > screen.bottom())
+            y = globalPos.y() - sz.height() - 4;
+        move(x, y);
+        show();
+    }
+
+    void dismiss() {
+        if (isVisible()) hide();
+        m_nodeId = 0;
+        m_values.clear();
+        m_labels.clear();
+    }
+};
 
 static constexpr int IND_EDITABLE   = 8;
 static constexpr int IND_HEX_DIM    = 9;
@@ -71,6 +204,27 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
     m_sci->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_sci, &QWidget::customContextMenuRequested,
             this, [this](const QPoint& pos) {
+        // Right-click on offset margin → show margin mode menu
+        int margin0Width = (int)m_sci->SendScintilla(
+            QsciScintillaBase::SCI_GETMARGINWIDTHN, 0UL, 0L);
+        if (pos.x() < margin0Width) {
+            QMenu menu;
+            auto* actRel = menu.addAction("Relative Offsets (+0x)");
+            auto* actAbs = menu.addAction("Absolute Addresses");
+            actRel->setCheckable(true);
+            actAbs->setCheckable(true);
+            actRel->setChecked(m_relativeOffsets);
+            actAbs->setChecked(!m_relativeOffsets);
+            QAction* chosen = menu.exec(m_sci->mapToGlobal(pos));
+            if (chosen == actRel && !m_relativeOffsets) {
+                m_relativeOffsets = true;
+                reformatMargins();
+            } else if (chosen == actAbs && m_relativeOffsets) {
+                m_relativeOffsets = false;
+                reformatMargins();
+            }
+            return;
+        }
         int line = m_sci->lineAt(pos);
         int nodeIdx = -1;
         int subLine = 0;
@@ -374,6 +528,9 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     if (m_editState.active)
         endInlineEdit();
 
+    // Guard: suppress popup dismiss during setText() which fires synthetic Leave events
+    m_applyingDocument = true;
+
     // Save hover state — setText() triggers viewport Leave events that would clear it
     uint64_t savedHoverId = m_hoveredNodeId;
     int savedHoverLine = m_hoveredLine;
@@ -422,6 +579,13 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     m_hoveredNodeId = savedHoverId;
     m_hoveredLine = savedHoverLine;
     m_hoverInside = savedHoverInside;
+    m_applyingDocument = false;
+
+    // Re-apply hover markers (setText() clears all Scintilla markers).
+    // applyHoverCursor() is NOT called here — it evaluates hitTest() against
+    // composed text that updateCommandRow() will overwrite.  The correct call
+    // happens via applySelectionOverlays() after all text is finalized.
+    applyHoverHighlight();
 }
 
 void RcxEditor::applyMarginText(const QVector<LineMeta>& meta) {
@@ -787,31 +951,35 @@ void RcxEditor::applyHeatmapHighlight(const QVector<LineMeta>& meta) {
         int typeW = lm.effectiveTypeW;
         int nameW = lm.effectiveNameW;
 
-        // For hex preview nodes: use dataChanged + changedByteIndices (per-byte heat)
+        if (heat <= 0) continue;
+
+        // Pick the right indicator for this heat level (1→cold, 2→warm, 3→hot)
+        int activeInd = heatIndicators[qBound(0, heat - 1, 2)];
+
+        // For hex preview nodes: per-byte heat coloring on changed bytes
         if (isHexPreview(lm.nodeKind) && lm.dataChanged && !lm.changedByteIndices.isEmpty()) {
-            // Hex nodes don't track heatLevel (they're skipped in controller).
-            // Use IND_HEAT_COLD for any changed byte (simple visual feedback).
             int ind = kFoldCol + lm.depth * 3;
             int asciiStart = ind + typeW + kSepWidth;
             int hexStart = asciiStart + nameW + kSepWidth;
 
             for (int byteIdx : lm.changedByteIndices) {
-                fillIndicatorCols(IND_HEAT_COLD, i, asciiStart + byteIdx, asciiStart + byteIdx + 1);
+                fillIndicatorCols(activeInd, i, asciiStart + byteIdx, asciiStart + byteIdx + 1);
                 int hexCol = hexStart + byteIdx * 3;
-                fillIndicatorCols(IND_HEAT_COLD, i, hexCol, hexCol + 2);
+                fillIndicatorCols(activeInd, i, hexCol, hexCol + 2);
+            }
+            // Clear the other two heat indicators on this line
+            for (int hi : heatIndicators) {
+                if (hi != activeInd)
+                    clearIndicatorLine(hi, i);
             }
             continue;
         }
 
         // Non-hex nodes: apply heat-level indicator to value span
-        if (heat <= 0) continue;
-
         QString lineText = getLineText(m_sci, i);
         ColumnSpan vs = valueSpan(lm, lineText.size(), typeW, nameW);
         if (!vs.valid) continue;
 
-        // Pick the right indicator for this heat level (1→cold, 2→warm, 3→hot)
-        int activeInd = heatIndicators[qBound(0, heat - 1, 2)];
         fillIndicatorCols(activeInd, i, vs.start, vs.end);
 
         // Clear the other two heat indicators on this span to avoid overlap
@@ -1478,6 +1646,10 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
     }
     // Track mouse position for cursor updates (both edit and non-edit mode)
     if (obj == m_sci->viewport()) {
+        // Ignore synthetic Leave from setText() during document refresh
+        if (m_applyingDocument && event->type() == QEvent::Leave)
+            return true;
+
         if (event->type() == QEvent::MouseMove) {
             m_lastHoverPos = static_cast<QMouseEvent*>(event)->pos();
             m_hoverInside = true;
@@ -1683,6 +1855,9 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line, int col) {
     m_hoveredNodeId = 0;
     m_hoveredLine = -1;
     applyHoverHighlight();
+    // Dismiss hover popup so it gets recreated with Set buttons once edit starts
+    if (m_historyPopup)
+        static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
     // Clear editable-token color hints (de-emphasize non-active tokens)
     clearIndicatorLine(IND_EDITABLE, m_hintLine);
     m_hintLine = -1;
@@ -1864,6 +2039,9 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line, int col) {
             m_sci->viewport()->setCursor(Qt::ArrowCursor);
         });
     }
+    // Refresh hover cursor so value history popup appears with Set buttons immediately
+    if (target == EditTarget::Value)
+        QTimer::singleShot(0, this, &RcxEditor::applyHoverCursor);
     return true;
 }
 
@@ -2216,25 +2394,60 @@ void RcxEditor::applyHoverCursor() {
     if (m_editState.active) {
         if (m_sci->isListActive()) {
             m_sci->viewport()->setCursor(Qt::ArrowCursor);
-            return;
-        }
-        auto h = hitTest(m_lastHoverPos);
-        if (h.line == m_editState.line &&
-            h.col >= m_editState.spanStart && h.col <= editEndCol()) {
-            m_sci->viewport()->setCursor(Qt::IBeamCursor);
         } else {
-            m_sci->viewport()->setCursor(Qt::ArrowCursor);
+            auto h = hitTest(m_lastHoverPos);
+            if (h.line == m_editState.line &&
+                h.col >= m_editState.spanStart && h.col <= editEndCol()) {
+                m_sci->viewport()->setCursor(Qt::IBeamCursor);
+            } else {
+                m_sci->viewport()->setCursor(Qt::ArrowCursor);
+            }
+        }
+        // Value history popup — only during inline value editing on a heated node
+        {
+            bool showPopup = false;
+            if (m_valueHistory && m_editState.target == EditTarget::Value
+                && m_editState.line >= 0 && m_editState.line < m_meta.size()) {
+                const LineMeta& lm = m_meta[m_editState.line];
+                if (lm.heatLevel > 0 && lm.nodeId != 0) {
+                    auto it = m_valueHistory->find(lm.nodeId);
+                    if (it != m_valueHistory->end() && it->uniqueCount() > 1) {
+                        if (!m_historyPopup)
+                            m_historyPopup = new ValueHistoryPopup(this);
+                        auto* popup = static_cast<ValueHistoryPopup*>(m_historyPopup);
+                        popup->setOnSet([this](const QString& val) {
+                            if (!m_editState.active) return;
+                            long endPos = posFromCol(m_sci, m_editState.line, editEndCol());
+                            m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL,
+                                                 m_editState.posStart, endPos);
+                            QByteArray utf8 = val.toUtf8();
+                            m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACESEL,
+                                                 (uintptr_t)0, utf8.constData());
+                        });
+                        popup->populate(lm.nodeId, *it, editorFont(), true);
+                        int px = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION,
+                                                           (unsigned long)0, m_editState.posStart);
+                        int py = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION,
+                                                           (unsigned long)0, m_editState.posStart);
+                        int lh = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT,
+                                                           (unsigned long)m_editState.line);
+                        QPoint anchor = m_sci->viewport()->mapToGlobal(QPoint(px, py + lh));
+                        popup->showAt(anchor);
+                        showPopup = true;
+                    }
+                }
+            }
+            if (!showPopup && m_historyPopup && m_historyPopup->isVisible())
+                static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
         }
         return;
     }
 
-    // Mouse left viewport - set Arrow, cancel calltip
+    // Mouse left viewport - set Arrow, dismiss history popup
+    // (but not during applyDocument — the Leave is synthetic from setText)
     if (!m_hoverInside) {
-        if (m_calltipVisible) {
-            m_sci->SendScintilla(QsciScintillaBase::SCI_CALLTIPCANCEL);
-            m_calltipVisible = false;
-            m_calltipLine = -1;
-        }
+        if (m_historyPopup && !m_applyingDocument)
+            static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
         m_sci->viewport()->setCursor(Qt::ArrowCursor);
         return;
     }
@@ -2323,41 +2536,39 @@ void RcxEditor::applyHoverCursor() {
         m_hoverSpanLines.append(h.line);
     }
 
-    // Value history calltip on hover
+    // Value history popup on hover (read-only, no buttons)
     {
-        bool showCalltip = false;
-        if (m_valueHistory && h.line >= 0 && h.line < m_meta.size() && !m_editState.active) {
+        bool showPopup = false;
+        if (m_valueHistory && h.line >= 0 && h.line < m_meta.size()) {
             const LineMeta& lm = m_meta[h.line];
             if (lm.heatLevel > 0 && lm.nodeId != 0) {
                 auto it = m_valueHistory->find(lm.nodeId);
                 if (it != m_valueHistory->end() && it->uniqueCount() > 1) {
-                    // Check cursor is over the value span
                     QString lineText = getLineText(m_sci, h.line);
                     ColumnSpan vs = valueSpan(lm, lineText.size(), lm.effectiveTypeW, lm.effectiveNameW);
                     if (vs.valid && h.col >= vs.start && h.col < vs.end) {
-                        QString tip = QStringLiteral("Previous Values:");
-                        it->forEach([&](const QString& v) {
-                            tip += QStringLiteral("\n  ") + v;
-                        });
-                        if (m_calltipLine != h.line) {
-                            long pos = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
+                        if (!m_historyPopup)
+                            m_historyPopup = new ValueHistoryPopup(this);
+                        auto* popup = static_cast<ValueHistoryPopup*>(m_historyPopup);
+                        popup->populate(lm.nodeId, *it, editorFont(), false);
+                        long linePos = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
                                                             (unsigned long)h.line);
-                            QByteArray tipUtf8 = tip.toUtf8();
-                            m_sci->SendScintilla(QsciScintillaBase::SCI_CALLTIPSHOW,
-                                                 pos, tipUtf8.constData());
-                            m_calltipLine = h.line;
-                            m_calltipVisible = true;
-                        }
-                        showCalltip = true;
+                        long byteOff = lineText.left(vs.start).toUtf8().size();
+                        int px = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION,
+                                                           (unsigned long)0, linePos + byteOff);
+                        int py = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION,
+                                                           (unsigned long)0, linePos);
+                        int lh = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT,
+                                                           (unsigned long)h.line);
+                        QPoint anchor = m_sci->viewport()->mapToGlobal(QPoint(px, py + lh));
+                        popup->showAt(anchor);
+                        showPopup = true;
                     }
                 }
             }
         }
-        if (!showCalltip && m_calltipVisible) {
-            m_sci->SendScintilla(QsciScintillaBase::SCI_CALLTIPCANCEL);
-            m_calltipVisible = false;
-            m_calltipLine = -1;
-        }
+        if (!showPopup && m_historyPopup && m_historyPopup->isVisible())
+            static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
     }
 
     // Determine cursor shape based on interaction type
