@@ -1,7 +1,5 @@
 This tool helps you inspect raw bytes and interpret them as types (structs, arrays, primitives, pointers, padding) instead of just hex. It is essentially a debugging tool for figuring out unknown data structures either runtime or from some static source.
 
-![screenshot](screenshot.png)
-
 ## State
 
 - MCP (Model Context Protocol) bridge via `ReclassMcpBridge.exe`. The server starts by default and can be stopped from the File menu. It exposes all tool functionality to any MCP-compatible client (e.g. Claude Code) and falls back to UI prompts when the client requests something not yet covered by tools. To connect, add this to your MCP client config (e.g. `.mcp.json`):
