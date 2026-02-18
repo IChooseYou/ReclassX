@@ -262,7 +262,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         if (!display) return rawHex(val, 8);
         QString s = fmtPointer32(val);
         QString sym = prov.getSymbol((uint64_t)val);
-        if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
+        if (!sym.isEmpty()) s += QStringLiteral("  // ") + sym;
         return s;
     }
     case NodeKind::Pointer64: {
@@ -270,7 +270,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         if (!display) return rawHex(val, 16);
         QString s = fmtPointer64(val);
         QString sym = prov.getSymbol(val);
-        if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
+        if (!sym.isEmpty()) s += QStringLiteral("  // ") + sym;
         return s;
     }
     case NodeKind::FuncPtr32: {
@@ -278,7 +278,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         if (!display) return rawHex(val, 8);
         QString s = fmtPointer32(val);
         QString sym = prov.getSymbol((uint64_t)val);
-        if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
+        if (!sym.isEmpty()) s += QStringLiteral("  // ") + sym;
         return s;
     }
     case NodeKind::FuncPtr64: {
@@ -286,7 +286,7 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         if (!display) return rawHex(val, 16);
         QString s = fmtPointer64(val);
         QString sym = prov.getSymbol(val);
-        if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
+        if (!sym.isEmpty()) s += QStringLiteral("  // ") + sym;
         return s;
     }
     case NodeKind::Vec2:

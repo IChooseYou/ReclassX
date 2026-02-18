@@ -22,6 +22,7 @@ struct ComposeState {
     int                nameW       = kColName;  // global name column width (fallback)
     int                offsetHexDigits = 8;     // hex digit tier for offset margin
     bool               baseEmitted = false;     // only first root struct shows base address
+    uint64_t           currentPtrBase = 0;      // absolute addr of current pointer expansion target
 
     // Precomputed for O(1) lookups
     QHash<uint64_t, QVector<int>> childMap;
@@ -141,6 +142,7 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.nodeKind        = node.kind;
         lm.offsetText      = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, isCont, state.offsetHexDigits);
         lm.offsetAddr      = tree.baseAddress + absAddr;
+        lm.ptrBase         = state.currentPtrBase;
         lm.markerMask      = computeMarkers(node, prov, absAddr, isCont, depth);
         lm.foldLevel       = computeFoldLevel(depth, false);
         lm.effectiveTypeW  = typeW;
@@ -187,6 +189,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.lineKind   = LineKind::Field;
         lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
         lm.offsetAddr = tree.baseAddress + absAddr;
+        lm.ptrBase    = state.currentPtrBase;
         lm.nodeKind   = node.kind;
         lm.markerMask = (1u << M_CYCLE) | (1u << M_ERR);
         lm.foldLevel  = computeFoldLevel(depth, false);
@@ -205,6 +208,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.lineKind   = LineKind::ArrayElementSeparator;
         lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
         lm.offsetAddr = tree.baseAddress + absAddr;
+        lm.ptrBase    = state.currentPtrBase;
         lm.nodeKind   = node.kind;
         lm.foldLevel  = computeFoldLevel(depth, false);
         lm.markerMask = 0;
@@ -234,6 +238,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.lineKind   = LineKind::Header;
         lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
         lm.offsetAddr = tree.baseAddress + absAddr;
+        lm.ptrBase    = state.currentPtrBase;
         lm.nodeKind   = node.kind;
         lm.isRootHeader = false;
         lm.foldHead      = true;
@@ -297,6 +302,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                 lm.isArrayElement = true;
                 lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + elemAddr, false, state.offsetHexDigits);
                 lm.offsetAddr = tree.baseAddress + elemAddr;
+                lm.ptrBase    = state.currentPtrBase;
                 lm.markerMask = computeMarkers(elem, prov, elemAddr, false, childDepth);
                 lm.foldLevel  = computeFoldLevel(childDepth, false);
                 lm.effectiveTypeW = eTW;
@@ -350,6 +356,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                             tree.baseAddress + absAddr + child.offset, false,
                             state.offsetHexDigits);
                         lm.offsetAddr = tree.baseAddress + absAddr + child.offset;
+                        lm.ptrBase    = state.currentPtrBase;
                         lm.nodeKind   = child.kind;
                         lm.foldHead      = true;
                         lm.foldCollapsed = true;
@@ -394,6 +401,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         int sz = tree.structSpan(node.id, &state.childMap);
         lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr + sz, false, state.offsetHexDigits);
         lm.offsetAddr = tree.baseAddress + absAddr + sz;
+        lm.ptrBase    = state.currentPtrBase;
         state.emitLine(fmt::fmtStructFooter(node, depth, sz), lm);
     }
 
@@ -439,6 +447,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             lm.lineKind   = effectiveCollapsed ? LineKind::Field : LineKind::Header;
             lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
             lm.offsetAddr = tree.baseAddress + absAddr;
+            lm.ptrBase    = state.currentPtrBase;
             lm.nodeKind   = node.kind;
             lm.foldHead      = true;
             lm.foldCollapsed = effectiveCollapsed;
@@ -481,6 +490,9 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             if (!ptrReadable)
                 pBase = (uint64_t)0 - tree.baseAddress;
 
+            uint64_t savedPtrBase = state.currentPtrBase;
+            state.currentPtrBase = tree.baseAddress + pBase;
+
             if (hasMaterialized) {
                 // Render materialized children at the pointer target address.
                 // These are real tree nodes with independent state — use rootId
@@ -518,6 +530,8 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                     state.ptrVisiting.remove(key);
                 }
             }
+
+            state.currentPtrBase = savedPtrBase;
 
             // Footer for pointer fold
             {
@@ -668,6 +682,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         lm.foldHead  = false;
         lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress, false, state.offsetHexDigits);
         lm.offsetAddr = tree.baseAddress;
+        lm.ptrBase    = state.currentPtrBase;
         lm.markerMask = 0;
         lm.effectiveTypeW = state.typeW;
         lm.effectiveNameW = state.nameW;

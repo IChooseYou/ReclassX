@@ -654,9 +654,15 @@ void RcxController::refresh() {
                 const Node& node = m_doc->tree.nodes[lm.nodeIdx];
                 // Skip containers — they don't have scalar values
                 if (node.kind == NodeKind::Struct || node.kind == NodeKind::Array) continue;
+                // Skip FuncPtr nodes — vtable entries don't change; tracking them
+                // causes false heatmap and popup fighting with the disasm popup.
+                if (isFuncPtr(node.kind)) continue;
 
-                int64_t nodeOff = m_doc->tree.computeOffset(lm.nodeIdx);
-                uint64_t addr = static_cast<uint64_t>(nodeOff); // provider-relative
+                // Use the absolute address from compose (correct for pointer-expanded nodes)
+                // and convert to provider-relative by subtracting the base address.
+                uint64_t addr = lm.offsetAddr >= m_doc->tree.baseAddress
+                    ? lm.offsetAddr - m_doc->tree.baseAddress
+                    : static_cast<uint64_t>(m_doc->tree.computeOffset(lm.nodeIdx));
                 int sz = node.byteSize();
                 if (sz <= 0 || !prov->isReadable(addr, sz)) continue;
 
@@ -690,9 +696,18 @@ void RcxController::refresh() {
         }
     }
 
+    // Resolve providers for disasm popup:
+    // - snapProv: snapshot or real — for reading pointer values within the tree
+    // - realProv: always the real process provider — for reading code at arbitrary addresses
+    const Provider* snapProv = m_snapshotProv
+        ? static_cast<const Provider*>(m_snapshotProv.get())
+        : (m_doc->provider ? m_doc->provider.get() : nullptr);
+    const Provider* realProv = m_doc->provider ? m_doc->provider.get() : nullptr;
+
     for (auto* editor : m_editors) {
         editor->setCustomTypeNames(customTypes);
         editor->setValueHistoryRef(&m_valueHistory);
+        editor->setProviderRef(snapProv, realProv, &m_doc->tree);
         ViewState vs = editor->saveViewState();
         editor->applyDocument(m_lastResult);
         editor->restoreViewState(vs);
@@ -1160,35 +1175,111 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         }
     }
 
-    // Multi-select batch actions at top
+    // Multi-select batch actions
     if (hasNode && m_selIds.size() > 1) {
         QMenu menu;
         int count = m_selIds.size();
         QSet<uint64_t> ids = m_selIds;
-        menu.addAction(icon("trash.svg"), QString("Delete %1 nodes").arg(count), [this, ids]() {
+
+        // Helper: collect indices from selected ids
+        auto collectIndices = [this, &ids]() {
             QVector<int> indices;
             for (uint64_t id : ids) {
                 int idx = m_doc->tree.indexOfId(id);
                 if (idx >= 0) indices.append(idx);
             }
-            batchRemoveNodes(indices);
-        });
+            return indices;
+        };
+
+        // Quick-convert shortcuts when all selected nodes share the same kind
+        NodeKind commonKind = NodeKind::Hex64;
+        bool allSame = true;
+        {
+            bool first = true;
+            for (uint64_t id : ids) {
+                int idx = m_doc->tree.indexOfId(id);
+                if (idx < 0) continue;
+                if (first) { commonKind = m_doc->tree.nodes[idx].kind; first = false; }
+                else if (m_doc->tree.nodes[idx].kind != commonKind) { allSame = false; break; }
+            }
+        }
+        bool addedQuickConvert = false;
+        if (allSame) {
+            if (commonKind == NodeKind::Hex64) {
+                menu.addAction("Change to uint64_t", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::UInt64); });
+                menu.addAction("Change to uint32_t", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::UInt32); });
+                addedQuickConvert = true;
+            } else if (commonKind == NodeKind::Hex32) {
+                menu.addAction("Change to uint32_t", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::UInt32); });
+                addedQuickConvert = true;
+            } else if (commonKind == NodeKind::Hex16) {
+                menu.addAction("Change to int16_t", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::Int16); });
+                addedQuickConvert = true;
+            }
+            if (commonKind == NodeKind::Hex64 || commonKind == NodeKind::Pointer64) {
+                menu.addAction("Change to fnptr64", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::FuncPtr64); });
+                addedQuickConvert = true;
+            }
+            if (commonKind == NodeKind::Hex32 || commonKind == NodeKind::Pointer32) {
+                menu.addAction("Change to fnptr32", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::FuncPtr32); });
+                addedQuickConvert = true;
+            }
+            if (commonKind == NodeKind::FuncPtr64) {
+                menu.addAction("Change to ptr64", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::Pointer64); });
+                addedQuickConvert = true;
+            }
+            if (commonKind == NodeKind::FuncPtr32) {
+                menu.addAction("Change to ptr32", [this, collectIndices]() {
+                    batchChangeKind(collectIndices(), NodeKind::Pointer32); });
+                addedQuickConvert = true;
+            }
+        }
+        if (addedQuickConvert)
+            menu.addSeparator();
+
         menu.addAction(icon("symbol-structure.svg"), QString("Change type of %1 nodes...").arg(count),
-                       [this, ids]() {
+                       [this, ids, collectIndices]() {
             QStringList types;
             for (const auto& e : kKindMeta) types << e.name;
             bool ok;
             QString sel = QInputDialog::getItem(nullptr, "Change Type", "Type:",
                                                 types, 0, false, &ok);
-            if (ok) {
-                QVector<int> indices;
-                for (uint64_t id : ids) {
-                    int idx = m_doc->tree.indexOfId(id);
-                    if (idx >= 0) indices.append(idx);
-                }
-                batchChangeKind(indices, kindFromString(sel));
+            if (ok)
+                batchChangeKind(collectIndices(), kindFromString(sel));
+        });
+
+        menu.addSeparator();
+
+        menu.addAction(icon("files.svg"), QString("Duplicate %1 nodes").arg(count), [this, ids]() {
+            for (uint64_t id : ids) {
+                int idx = m_doc->tree.indexOfId(id);
+                if (idx >= 0) duplicateNode(idx);
             }
         });
+        menu.addAction(icon("trash.svg"), QString("Delete %1 nodes").arg(count), [this, collectIndices]() {
+            batchRemoveNodes(collectIndices());
+        });
+
+        menu.addSeparator();
+
+        menu.addAction(icon("link.svg"), "Copy &Address", [this, ids]() {
+            QStringList addrs;
+            for (uint64_t id : ids) {
+                int ni = m_doc->tree.indexOfId(id);
+                if (ni < 0) continue;
+                uint64_t addr = m_doc->tree.baseAddress + m_doc->tree.computeOffset(ni);
+                addrs << QStringLiteral("0x") + QString::number(addr, 16).toUpper();
+            }
+            QApplication::clipboard()->setText(addrs.join('\n'));
+        });
+
         menu.exec(globalPos);
         return;
     }
@@ -1258,6 +1349,7 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
             menu.addSeparator();
 
         bool isEditable = node.kind != NodeKind::Struct && node.kind != NodeKind::Array
+                          && !isHexNode(node.kind)
                           && m_doc->provider->isWritable();
         if (isEditable) {
             menu.addAction(icon("edit.svg"), "Edit &Value\tEnter", [editor, line]() {

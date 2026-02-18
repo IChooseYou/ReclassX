@@ -487,6 +487,7 @@ struct LineMeta {
     int      arrayElementIdx = -1; // Index of this element within parent array (-1 if not array element)
     QString  offsetText;
     uint64_t offsetAddr     = 0;     // Raw absolute address (for margin toggle)
+    uint64_t ptrBase        = 0;     // Pointer expansion base (non-zero = use for RVA)
     uint32_t markerMask     = 0;
     bool     dataChanged    = false;  // true if any byte in this node changed since last refresh
     int      heatLevel      = 0;     // 0=static, 1=cold, 2=warm, 3=hot (from ValueHistory)

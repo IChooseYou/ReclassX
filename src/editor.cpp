@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "disasm.h"
 #include "providerregistry.h"
 #include <QDebug>
 #include <Qsci/qsciscintilla.h>
@@ -131,7 +132,6 @@ public:
     }
 
     void showAt(const QPoint& globalPos) {
-        if (isVisible()) return;
         QSize sz = sizeHint();
         QRect screen = QApplication::screenAt(globalPos)
             ? QApplication::screenAt(globalPos)->availableGeometry()
@@ -141,7 +141,7 @@ public:
         if (y + sz.height() > screen.bottom())
             y = globalPos.y() - sz.height() - 4;
         move(x, y);
-        show();
+        if (!isVisible()) show();
     }
 
     void dismiss() {
@@ -149,6 +149,106 @@ public:
         m_nodeId = 0;
         m_values.clear();
         m_labels.clear();
+    }
+};
+
+// ── Disassembly / hex-dump hover popup ──
+
+class DisasmPopup : public QFrame {
+    uint64_t m_nodeId = 0;
+    QString  m_body;
+    QLabel*  m_titleLabel = nullptr;
+    QLabel*  m_bodyLabel  = nullptr;
+public:
+    explicit DisasmPopup(QWidget* parent)
+        : QFrame(parent, Qt::ToolTip | Qt::FramelessWindowHint)
+    {
+        setAttribute(Qt::WA_DeleteOnClose, false);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setFrameShape(QFrame::NoFrame);
+        setAutoFillBackground(true);
+
+        auto* vbox = new QVBoxLayout(this);
+        vbox->setContentsMargins(8, 6, 8, 6);
+        vbox->setSpacing(2);
+
+        m_titleLabel = new QLabel;
+        QFont bold = m_titleLabel->font();
+        bold.setBold(true);
+        m_titleLabel->setFont(bold);
+        vbox->addWidget(m_titleLabel);
+
+        auto* sep = new QFrame;
+        sep->setFrameShape(QFrame::HLine);
+        sep->setFrameShadow(QFrame::Plain);
+        sep->setFixedHeight(1);
+        vbox->addWidget(sep);
+
+        m_bodyLabel = new QLabel;
+        m_bodyLabel->setTextFormat(Qt::PlainText);
+        m_bodyLabel->setWordWrap(false);
+        vbox->addWidget(m_bodyLabel);
+    }
+
+    uint64_t nodeId() const { return m_nodeId; }
+
+    void populate(uint64_t nodeId, const QString& title, const QString& body,
+                  const QFont& font) {
+        if (nodeId == m_nodeId && body == m_body && isVisible())
+            return;
+
+        m_nodeId = nodeId;
+        m_body = body;
+
+        const auto& theme = ThemeManager::instance().current();
+        QPalette pal;
+        pal.setColor(QPalette::Window, theme.backgroundAlt);
+        pal.setColor(QPalette::WindowText, theme.text);
+        setPalette(pal);
+
+        QFont bold = font;
+        bold.setBold(true);
+        m_titleLabel->setFont(bold);
+        m_titleLabel->setText(title);
+        m_titleLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(theme.text.name()));
+
+        // Find and style the separator
+        for (auto* child : findChildren<QFrame*>()) {
+            if (child->frameShape() == QFrame::HLine) {
+                QPalette sp;
+                sp.setColor(QPalette::WindowText, theme.border);
+                child->setPalette(sp);
+                break;
+            }
+        }
+
+        m_bodyLabel->setFont(font);
+        m_bodyLabel->setText(body);
+        m_bodyLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(theme.syntaxNumber.name()));
+
+        setMaximumWidth(600);
+        adjustSize();
+    }
+
+    void showAt(const QPoint& globalPos) {
+        QSize sz = sizeHint();
+        QRect screen = QApplication::screenAt(globalPos)
+            ? QApplication::screenAt(globalPos)->availableGeometry()
+            : QRect(0, 0, 1920, 1080);
+        int x = qMin(globalPos.x(), screen.right() - sz.width());
+        int y = globalPos.y();
+        if (y + sz.height() > screen.bottom())
+            y = globalPos.y() - sz.height() - 4;
+        move(x, y);
+        if (!isVisible()) show();
+    }
+
+    void dismiss() {
+        if (isVisible()) hide();
+        m_nodeId = 0;
+        m_body.clear();
     }
 };
 
@@ -570,6 +670,7 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     applyFoldLevels(result.meta);
     applyHexDimming(result.meta);
     applyHeatmapHighlight(result.meta);
+    applySymbolColoring(result.meta);
     applyCommandRowPills();
 
     // Reset hint line - applySelectionOverlay will repaint indicators
@@ -626,7 +727,8 @@ void RcxEditor::reformatMargins() {
                 lm.lineKind == LineKind::CommandRow) {
                 lm.offsetText = QString(hexDigits + 1, ' ');
             } else {
-                uint64_t rel = lm.offsetAddr >= base ? lm.offsetAddr - base : 0;
+                uint64_t rvaBase = lm.ptrBase ? lm.ptrBase : base;
+                uint64_t rel = lm.offsetAddr >= rvaBase ? lm.offsetAddr - rvaBase : 0;
                 lm.offsetText = (QStringLiteral("+") +
                     QString::number(rel, 16).toUpper())
                     .rightJustified(hexDigits, ' ') + QChar(' ');
@@ -663,17 +765,22 @@ void RcxEditor::reformatMargins() {
         };
 
         if (m_relativeOffsets) {
-            // Derive local offset: find enclosing header or array element separator
+            // Derive local offset: for pointer-expanded children use ptrBase,
+            // otherwise find enclosing header or array element separator
             uint64_t parentAddr = base;
-            for (int j = i - 1; j >= 0; j--) {
-                const auto& pLm = m_meta[j];
-                if (pLm.lineKind == LineKind::Header && pLm.depth < lm.depth) {
-                    parentAddr = pLm.offsetAddr;
-                    break;
-                }
-                if (pLm.lineKind == LineKind::ArrayElementSeparator && pLm.depth <= lm.depth) {
-                    parentAddr = pLm.offsetAddr;
-                    break;
+            if (lm.ptrBase != 0) {
+                parentAddr = lm.ptrBase;
+            } else {
+                for (int j = i - 1; j >= 0; j--) {
+                    const auto& pLm = m_meta[j];
+                    if (pLm.lineKind == LineKind::Header && pLm.depth < lm.depth) {
+                        parentAddr = pLm.offsetAddr;
+                        break;
+                    }
+                    if (pLm.lineKind == LineKind::ArrayElementSeparator && pLm.depth <= lm.depth) {
+                        parentAddr = pLm.offsetAddr;
+                        break;
+                    }
                 }
             }
             uint64_t localOff = lm.offsetAddr >= parentAddr ? lm.offsetAddr - parentAddr : 0;
@@ -908,6 +1015,22 @@ ColumnSpan RcxEditor::typeSpan(const LineMeta& lm, int typeW)  { return typeSpan
 ColumnSpan RcxEditor::nameSpan(const LineMeta& lm, int typeW, int nameW)  { return nameSpanFor(lm, typeW, nameW); }
 ColumnSpan RcxEditor::valueSpan(const LineMeta& lm, int lineLength, int typeW, int nameW) { return valueSpanFor(lm, lineLength, typeW, nameW); }
 
+// For pointer-like nodes, narrow value span to just the address portion
+// (before the "  // " separator that precedes the symbol like "Module+0x1234").
+static ColumnSpan narrowPtrValueSpan(const LineMeta& lm, const ColumnSpan& vs,
+                                     const QString& lineText) {
+    if (!vs.valid) return vs;
+    if (!isFuncPtr(lm.nodeKind)
+        && lm.nodeKind != NodeKind::Pointer32
+        && lm.nodeKind != NodeKind::Pointer64)
+        return vs;
+    QString valText = lineText.mid(vs.start, vs.end - vs.start);
+    int sep = valText.indexOf(QLatin1String("  // "));
+    if (sep > 0)
+        return {vs.start, vs.start + sep, true};
+    return vs;
+}
+
 // ── Multi-selection ──
 
 QSet<int> RcxEditor::selectedNodeIndices() const {
@@ -956,28 +1079,10 @@ void RcxEditor::applyHeatmapHighlight(const QVector<LineMeta>& meta) {
         // Pick the right indicator for this heat level (1→cold, 2→warm, 3→hot)
         int activeInd = heatIndicators[qBound(0, heat - 1, 2)];
 
-        // For hex preview nodes: per-byte heat coloring on changed bytes
-        if (isHexPreview(lm.nodeKind) && lm.dataChanged && !lm.changedByteIndices.isEmpty()) {
-            int ind = kFoldCol + lm.depth * 3;
-            int asciiStart = ind + typeW + kSepWidth;
-            int hexStart = asciiStart + nameW + kSepWidth;
-
-            for (int byteIdx : lm.changedByteIndices) {
-                fillIndicatorCols(activeInd, i, asciiStart + byteIdx, asciiStart + byteIdx + 1);
-                int hexCol = hexStart + byteIdx * 3;
-                fillIndicatorCols(activeInd, i, hexCol, hexCol + 2);
-            }
-            // Clear the other two heat indicators on this line
-            for (int hi : heatIndicators) {
-                if (hi != activeInd)
-                    clearIndicatorLine(hi, i);
-            }
-            continue;
-        }
-
-        // Non-hex nodes: apply heat-level indicator to value span
+        // Apply heat-level indicator to value span (narrowed for pointer-like nodes)
         QString lineText = getLineText(m_sci, i);
-        ColumnSpan vs = valueSpan(lm, lineText.size(), typeW, nameW);
+        ColumnSpan vs = narrowPtrValueSpan(lm,
+            valueSpan(lm, lineText.size(), typeW, nameW), lineText);
         if (!vs.valid) continue;
 
         fillIndicatorCols(activeInd, i, vs.start, vs.end);
@@ -987,6 +1092,28 @@ void RcxEditor::applyHeatmapHighlight(const QVector<LineMeta>& meta) {
             if (hi != activeInd)
                 clearIndicatorLine(hi, i);
         }
+    }
+}
+
+void RcxEditor::applySymbolColoring(const QVector<LineMeta>& meta) {
+    for (int i = 0; i < meta.size(); i++) {
+        const LineMeta& lm = meta[i];
+        if (!isFuncPtr(lm.nodeKind)
+            && lm.nodeKind != NodeKind::Pointer32
+            && lm.nodeKind != NodeKind::Pointer64)
+            continue;
+        QString lineText = getLineText(m_sci, i);
+        // Find "  // " within the value region and color "// sym" portion green
+        ColumnSpan vs = valueSpan(lm, lineText.size(), lm.effectiveTypeW, lm.effectiveNameW);
+        if (!vs.valid) continue;
+        int searchFrom = vs.start;
+        int sep = lineText.indexOf(QLatin1String("  // "), searchFrom);
+        if (sep < 0 || sep >= vs.end) continue;
+        int symStart = sep + 2;  // start of "// sym"
+        int symEnd = vs.end;
+        while (symEnd > symStart && lineText[symEnd - 1] == ' ') symEnd--;
+        if (symEnd > symStart)
+            fillIndicatorCols(IND_HINT_GREEN, i, symStart, symEnd);
     }
 }
 
@@ -1354,7 +1481,8 @@ static bool hitTestTarget(QsciScintilla* sci,
 
     ColumnSpan ts = RcxEditor::typeSpan(lm, typeW);
     ColumnSpan ns = RcxEditor::nameSpan(lm, typeW, nameW);
-    ColumnSpan vs = RcxEditor::valueSpan(lm, textLen, typeW, nameW);
+    ColumnSpan vs = narrowPtrValueSpan(lm,
+        RcxEditor::valueSpan(lm, textLen, typeW, nameW), lineText);
 
     // Pointer fields/headers: check sub-spans within type column first
     if (lm.nodeKind == NodeKind::Pointer32 || lm.nodeKind == NodeKind::Pointer64) {
@@ -2440,14 +2568,19 @@ void RcxEditor::applyHoverCursor() {
             if (!showPopup && m_historyPopup && m_historyPopup->isVisible())
                 static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
         }
+        // Always dismiss disasm popup during inline editing
+        if (m_disasmPopup && m_disasmPopup->isVisible())
+            static_cast<DisasmPopup*>(m_disasmPopup)->dismiss();
         return;
     }
 
-    // Mouse left viewport - set Arrow, dismiss history popup
+    // Mouse left viewport - set Arrow, dismiss popups
     // (but not during applyDocument — the Leave is synthetic from setText)
     if (!m_hoverInside) {
         if (m_historyPopup && !m_applyingDocument)
             static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
+        if (m_disasmPopup && !m_applyingDocument)
+            static_cast<DisasmPopup*>(m_disasmPopup)->dismiss();
         m_sci->viewport()->setCursor(Qt::ArrowCursor);
         return;
     }
@@ -2522,6 +2655,18 @@ void RcxEditor::applyHoverCursor() {
                         m_hoverSpanLines.append(line);
                     }
                 }
+                // Narrow pointer-like nodes to address portion only (exclude symbol)
+                if (!narrowed && (isFuncPtr(lm.nodeKind)
+                    || lm.nodeKind == NodeKind::Pointer32
+                    || lm.nodeKind == NodeKind::Pointer64)) {
+                    ColumnSpan full = valueSpan(lm, lineText.size(), lm.effectiveTypeW, lm.effectiveNameW);
+                    ColumnSpan narrow = narrowPtrValueSpan(lm, full, lineText);
+                    if (h.col >= narrow.start && h.col < narrow.end) {
+                        fillIndicatorCols(IND_HOVER_SPAN, line, narrow.start, narrow.end);
+                        m_hoverSpanLines.append(line);
+                    }
+                    narrowed = true;
+                }
             }
             if (!narrowed && h.col >= span.start && h.col < span.end) {
                 fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
@@ -2537,11 +2682,16 @@ void RcxEditor::applyHoverCursor() {
     }
 
     // Value history popup on hover (read-only, no buttons)
+    // Skip FuncPtr and void-Pointer nodes — they use the disasm popup instead.
     {
         bool showPopup = false;
         if (m_valueHistory && h.line >= 0 && h.line < m_meta.size()) {
             const LineMeta& lm = m_meta[h.line];
-            if (lm.heatLevel > 0 && lm.nodeId != 0) {
+            bool skipForDisasm = isFuncPtr(lm.nodeKind)
+                || ((lm.nodeKind == NodeKind::Pointer32
+                     || lm.nodeKind == NodeKind::Pointer64)
+                    && lm.pointerTargetName.isEmpty());
+            if (lm.heatLevel > 0 && lm.nodeId != 0 && !skipForDisasm) {
                 auto it = m_valueHistory->find(lm.nodeId);
                 if (it != m_valueHistory->end() && it->uniqueCount() > 1) {
                     QString lineText = getLineText(m_sci, h.line);
@@ -2569,6 +2719,110 @@ void RcxEditor::applyHoverCursor() {
         }
         if (!showPopup && m_historyPopup && m_historyPopup->isVisible())
             static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
+    }
+
+    // Disasm / hex-dump popup on hover for FuncPtr and void Pointer nodes
+    {
+        bool showDisasm = false;
+        if (m_disasmProvider && m_disasmTree && h.line >= 0 && h.line < m_meta.size()) {
+            const LineMeta& lm = m_meta[h.line];
+            bool isFP = isFuncPtr(lm.nodeKind);
+            bool isVoidPtr = (lm.nodeKind == NodeKind::Pointer32
+                              || lm.nodeKind == NodeKind::Pointer64)
+                             && lm.pointerTargetName.isEmpty();
+            if ((isFP || isVoidPtr) && lm.nodeIdx >= 0
+                && lm.nodeIdx < m_disasmTree->nodes.size()) {
+                // Check hover is over the address portion of the value column
+                QString lineText = getLineText(m_sci, h.line);
+                ColumnSpan vs = narrowPtrValueSpan(lm,
+                    valueSpan(lm, lineText.size(), lm.effectiveTypeW, lm.effectiveNameW),
+                    lineText);
+                if (vs.valid && h.col >= vs.start && h.col < vs.end) {
+                    const Node& node = m_disasmTree->nodes[lm.nodeIdx];
+                    // For void ptrs, only show hex dump if refId == 0
+                    if (!isVoidPtr || node.refId == 0) {
+                        bool is64 = (lm.nodeKind == NodeKind::FuncPtr64
+                                     || lm.nodeKind == NodeKind::Pointer64);
+                        // Use composed address (correct for pointer-expanded nodes)
+                        // not node.offset (which is just offset within struct definition).
+                        uint64_t provAddr = lm.offsetAddr >= m_disasmTree->baseAddress
+                            ? lm.offsetAddr - m_disasmTree->baseAddress
+                            : static_cast<uint64_t>(node.offset);
+                        uint64_t ptrVal = is64
+                            ? m_disasmProvider->readU64(provAddr)
+                            : (uint64_t)m_disasmProvider->readU32(provAddr);
+                        if (ptrVal != 0 && ptrVal != UINT64_MAX
+                            && !(is64 == false && ptrVal == 0xFFFFFFFF)) {
+                            // Read code bytes from the function target address.
+                            // Use the real provider (not snapshot) because function
+                            // code lives at arbitrary process addresses that aren't
+                            // in the snapshot page table.  The provider reads from
+                            // m_base + addr via ReadProcessMemory, so we convert
+                            // the absolute ptrVal to provider-relative.
+                            const Provider* codeProv = m_disasmRealProv
+                                ? m_disasmRealProv : m_disasmProvider;
+                            constexpr int kMaxRead = 128;
+                            uint64_t codeAddr = ptrVal - m_disasmTree->baseAddress;
+                            QByteArray bytes(kMaxRead, Qt::Uninitialized);
+                            bool readOk = codeProv->read(codeAddr, bytes.data(), kMaxRead);
+                            if (readOk) {
+                                QString title, body;
+                                if (isFP) {
+                                    title = QStringLiteral("Disassembly");
+                                    body = disassemble(bytes, ptrVal,
+                                                       is64 ? 64 : 32, kMaxRead);
+                                } else {
+                                    title = QStringLiteral("Hex Dump");
+                                    body = hexDump(bytes, ptrVal, kMaxRead);
+                                }
+                                // Cap at 6 lines so the popup stays compact
+                                {
+                                    const int kMaxLines = 6;
+                                    int nth = 0, idx = 0;
+                                    while (nth < kMaxLines && (idx = body.indexOf('\n', idx)) != -1)
+                                        { ++nth; ++idx; }
+                                    if (nth == kMaxLines && idx < body.size()) {
+                                        body.truncate(idx);
+                                        body += QStringLiteral("...");
+                                    }
+                                }
+                                if (!body.isEmpty()) {
+                                    if (!m_disasmPopup)
+                                        m_disasmPopup = new DisasmPopup(this);
+                                    auto* popup = static_cast<DisasmPopup*>(
+                                        m_disasmPopup);
+                                    popup->populate(lm.nodeId, title, body,
+                                                    editorFont());
+                                    long linePos = m_sci->SendScintilla(
+                                        QsciScintillaBase::SCI_POSITIONFROMLINE,
+                                        (unsigned long)h.line);
+                                    long byteOff = lineText.left(vs.start)
+                                        .toUtf8().size();
+                                    int px = (int)m_sci->SendScintilla(
+                                        QsciScintillaBase::SCI_POINTXFROMPOSITION,
+                                        (unsigned long)0, linePos + byteOff);
+                                    int py = (int)m_sci->SendScintilla(
+                                        QsciScintillaBase::SCI_POINTYFROMPOSITION,
+                                        (unsigned long)0, linePos);
+                                    int lh = (int)m_sci->SendScintilla(
+                                        QsciScintillaBase::SCI_TEXTHEIGHT,
+                                        (unsigned long)h.line);
+                                    QPoint anchor = m_sci->viewport()->mapToGlobal(
+                                        QPoint(px, py + lh));
+                                    popup->showAt(anchor);
+                                    showDisasm = true;
+                                    // Dismiss value history popup to avoid fighting
+                                    if (m_historyPopup && m_historyPopup->isVisible())
+                                        static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!showDisasm && m_disasmPopup && m_disasmPopup->isVisible())
+            static_cast<DisasmPopup*>(m_disasmPopup)->dismiss();
     }
 
     // Determine cursor shape based on interaction type

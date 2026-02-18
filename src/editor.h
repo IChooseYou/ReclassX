@@ -55,6 +55,9 @@ public:
     QString textWithMargins() const;
     void setCustomTypeNames(const QStringList& names);
     void setValueHistoryRef(const QHash<uint64_t, ValueHistory>* ref) { m_valueHistory = ref; }
+    void setProviderRef(const Provider* prov, const Provider* realProv, const NodeTree* tree) {
+        m_disasmProvider = prov; m_disasmRealProv = realProv; m_disasmTree = tree;
+    }
 
     // Saved sources for quick-switch in source picker
     void setSavedSources(const QVector<SavedSourceDisplay>& sources) { m_savedSourceDisplay = sources; }
@@ -133,6 +136,10 @@ private:
     // ── Value history ref (owned by controller) ──
     const QHash<uint64_t, ValueHistory>* m_valueHistory = nullptr;
     QWidget* m_historyPopup = nullptr;  // ValueHistoryPopup (file-local class in editor.cpp)
+    QWidget* m_disasmPopup = nullptr;   // DisasmPopup (file-local class in editor.cpp)
+    const Provider* m_disasmProvider = nullptr;   // snapshot or real — for reading tree data
+    const Provider* m_disasmRealProv = nullptr;   // real process provider — for reading code at arbitrary addresses
+    const NodeTree* m_disasmTree = nullptr;
 
     // ── Reentrancy guards ──
     bool m_applyingDocument = false;
@@ -152,6 +159,7 @@ private:
     void applyFoldLevels(const QVector<LineMeta>& meta);
     void applyHexDimming(const QVector<LineMeta>& meta);
     void applyHeatmapHighlight(const QVector<LineMeta>& meta);
+    void applySymbolColoring(const QVector<LineMeta>& meta);
     void applyBaseAddressColoring(const QVector<LineMeta>& meta);
     void applyCommandRowPills();
 

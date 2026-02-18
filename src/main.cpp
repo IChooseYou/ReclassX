@@ -808,24 +808,96 @@ void MainWindow::newDocument() {
     rebuildWorkspaceModel();
 }
 
-void MainWindow::selfTest() {
-#ifdef Q_OS_WIN
-    // Auto-open KUSER_SHARED_DATA example if available
-    QString exPath = QCoreApplication::applicationDirPath()
-                     + "/examples/KUSER_SHARED_DATA.rcx";
-    if (QFile::exists(exPath)) {
-        project_open(exPath);
-    } else {
-        project_new();
+static void buildEditorDemo(NodeTree& tree, uintptr_t editorAddr) {
+    tree.nodes.clear();
+    tree.invalidateIdCache();
+    tree.m_nextId = 1;
+    tree.baseAddress = static_cast<uint64_t>(editorAddr);
+
+    // ── Root struct: RcxEditor ──
+    Node root;
+    root.kind = NodeKind::Struct;
+    root.name = QStringLiteral("editor");
+    root.structTypeName = QStringLiteral("RcxEditor");
+    root.classKeyword = QStringLiteral("class");
+    int ri = tree.addNode(root);
+    uint64_t rootId = tree.nodes[ri].id;
+
+    // ── VTable struct definition (separate root) ──
+    Node vtStruct;
+    vtStruct.kind = NodeKind::Struct;
+    vtStruct.name = QStringLiteral("VTable");
+    vtStruct.structTypeName = QStringLiteral("QWidgetVTable");
+    int vti = tree.addNode(vtStruct);
+    uint64_t vtId = tree.nodes[vti].id;
+
+    // VTable entries — these are real virtual function pointers from QObject/QWidget
+    static const char* vfNames[] = {
+        "deleting_dtor", "metaObject", "qt_metacast", "qt_metacall",
+        "event", "eventFilter", "timerEvent", "childEvent",
+        "customEvent", "connectNotify", "disconnectNotify", "devType",
+        "setVisible", "sizeHint", "minimumSizeHint", "heightForWidth",
+    };
+    for (int i = 0; i < 16; i++) {
+        Node fn;
+        fn.kind = NodeKind::FuncPtr64;
+        fn.name = QString::fromLatin1(vfNames[i]);
+        fn.parentId = vtId;
+        fn.offset = i * 8;
+        tree.addNode(fn);
     }
 
-    // Auto-attach process memory plugin to self
-    auto* ctrl = activeController();
-    if (ctrl) {
-        DWORD pid = GetCurrentProcessId();
-        QString target = QString("%1:Reclass.exe").arg(pid);
-        ctrl->attachViaPlugin(QStringLiteral("processmemory"), target);
+    // ── RcxEditor fields ──
+    // offset 0: vtable pointer → QWidgetVTable
+    {
+        Node n;
+        n.kind = NodeKind::Pointer64;
+        n.name = QStringLiteral("__vptr");
+        n.parentId = rootId;
+        n.offset = 0;
+        n.refId = vtId;
+        tree.addNode(n);
     }
+    // offset 8: QObjectData* d_ptr (QObject internals)
+    {
+        Node n;
+        n.kind = NodeKind::Pointer64;
+        n.name = QStringLiteral("d_ptr");
+        n.parentId = rootId;
+        n.offset = 8;
+        tree.addNode(n);
+    }
+    // The rest of the object: raw memory visible as Hex64 fields
+    // QWidget base is large (~200+ bytes), then RcxEditor members follow.
+    // Lay out enough to cover the interesting editor state.
+    for (int off = 16; off < 512; off += 8) {
+        Node n;
+        n.kind = NodeKind::Hex64;
+        n.name = QStringLiteral("field_%1").arg(off, 3, 16, QLatin1Char('0'));
+        n.parentId = rootId;
+        n.offset = off;
+        tree.addNode(n);
+    }
+}
+
+void MainWindow::selfTest() {
+#ifdef Q_OS_WIN
+    // Create a new project, then point it at the live editor object
+    project_new();
+
+    auto* ctrl = activeController();
+    if (!ctrl || ctrl->editors().isEmpty()) return;
+
+    auto* editor = ctrl->editors().first();
+    auto* doc = ctrl->document();
+
+    // Build a tree describing RcxEditor, based at the real object address
+    buildEditorDemo(doc->tree, reinterpret_cast<uintptr_t>(editor));
+
+    // Attach process memory to self — provider base will be set to the editor address
+    DWORD pid = GetCurrentProcessId();
+    QString target = QString("%1:Reclass.exe").arg(pid);
+    ctrl->attachViaPlugin(QStringLiteral("processmemory"), target);
 #else
     project_new();
 #endif

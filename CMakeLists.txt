@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(Reclass VERSION 0.1 LANGUAGES CXX)
+project(Reclass VERSION 0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
@@ -72,10 +73,14 @@ add_executable(Reclass
     src/titlebar.cpp
     src/mcp/mcp_bridge.h
     src/mcp/mcp_bridge.cpp
+    src/disasm.h
+    src/disasm.cpp
+    third_party/fadec/decode.c
+    third_party/fadec/format.c
     $<$<PLATFORM_ID:Windows>:src/app.rc>
 )
 
-target_include_directories(Reclass PRIVATE src)
+target_include_directories(Reclass PRIVATE src third_party/fadec)
 
 target_link_libraries(Reclass PRIVATE
     ${QT}::Widgets
@@ -135,7 +140,7 @@ foreach(_f
     \"${CMAKE_SOURCE_DIR}/src/generator.cpp\"
     \"${CMAKE_SOURCE_DIR}/src/main.cpp\")
     file(READ \${_f} _content)
-    file(APPEND \${_out} \${_content})
+    file(APPEND \${_out} \"\${_content}\")
     file(APPEND \${_out} \"\\n\")
 endforeach()
 message(STATUS \"Combined sources -> \${_out}\")
@@ -152,6 +157,11 @@ if(BUILD_TESTING)
     find_package(${QT} REQUIRED COMPONENTS Test)
     enable_testing()
 
+    # Disasm/Fadec sources needed by any test that links editor.cpp
+    set(DISASM_SRCS src/disasm.cpp third_party/fadec/decode.c third_party/fadec/format.c)
+
+    # ── Headless tests (Qt::Core only — safe for CI without a display) ──
+
     add_executable(test_core tests/test_core.cpp src/format.cpp src/compose.cpp)
     target_include_directories(test_core PRIVATE src)
     target_link_libraries(test_core PRIVATE ${QT}::Core ${QT}::Test)
@@ -167,7 +177,6 @@ if(BUILD_TESTING)
     target_link_libraries(test_compose PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_compose COMMAND test_compose)
 
-
     add_executable(test_provider tests/test_provider.cpp)
     target_include_directories(test_provider PRIVATE src)
     target_link_libraries(test_provider PRIVATE ${QT}::Core ${QT}::Test)
@@ -178,12 +187,47 @@ if(BUILD_TESTING)
     target_link_libraries(test_command_row PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_command_row COMMAND test_command_row)
 
+    add_executable(test_generator tests/test_generator.cpp
+        src/generator.cpp src/compose.cpp src/format.cpp)
+    target_include_directories(test_generator PRIVATE src)
+    target_link_libraries(test_generator PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_generator COMMAND test_generator)
+
+    add_executable(test_import_xml tests/test_import_xml.cpp
+        src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
+    target_include_directories(test_import_xml PRIVATE src)
+    target_link_libraries(test_import_xml PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_import_xml COMMAND test_import_xml)
+
+    add_executable(test_import_source tests/test_import_source.cpp
+        src/import_source.cpp src/format.cpp src/compose.cpp)
+    target_include_directories(test_import_source PRIVATE src)
+    target_link_libraries(test_import_source PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_import_source COMMAND test_import_source)
+
+    add_executable(test_export_xml tests/test_export_xml.cpp
+        src/export_reclass_xml.cpp src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
+    target_include_directories(test_export_xml PRIVATE src)
+    target_link_libraries(test_export_xml PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_export_xml COMMAND test_export_xml)
+
+    add_executable(test_disasm tests/test_disasm.cpp
+        src/disasm.cpp src/compose.cpp src/format.cpp
+        third_party/fadec/decode.c third_party/fadec/format.c)
+    target_include_directories(test_disasm PRIVATE src third_party/fadec)
+    target_link_libraries(test_disasm PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_disasm COMMAND test_disasm)
+
+    # ── UI tests (require Qt::Widgets / QScintilla / display — skip on headless CI) ──
+    option(BUILD_UI_TESTS "Build tests that require a display (Qt Widgets)" ON)
+    if(BUILD_UI_TESTS)
+
     add_executable(test_controller tests/test_controller.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_controller PRIVATE src)
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(test_controller PRIVATE src third_party/fadec)
     target_link_libraries(test_controller PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test
         QScintilla::QScintilla)
@@ -196,8 +240,8 @@ if(BUILD_TESTING)
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_validation PRIVATE src)
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(test_validation PRIVATE src third_party/fadec)
     target_link_libraries(test_validation PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test
         QScintilla::QScintilla)
@@ -206,18 +250,12 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME test_validation COMMAND test_validation)
 
-    add_executable(test_generator tests/test_generator.cpp
-        src/generator.cpp src/compose.cpp src/format.cpp)
-    target_include_directories(test_generator PRIVATE src)
-    target_link_libraries(test_generator PRIVATE ${QT}::Core ${QT}::Test)
-    add_test(NAME test_generator COMMAND test_generator)
-
     add_executable(test_context_menu tests/test_context_menu.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_context_menu PRIVATE src)
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(test_context_menu PRIVATE src third_party/fadec)
     target_link_libraries(test_context_menu PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test
         QScintilla::QScintilla)
@@ -229,8 +267,8 @@ if(BUILD_TESTING)
     add_executable(test_editor tests/test_editor.cpp
         src/editor.cpp src/compose.cpp src/format.cpp
         src/providerregistry.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_editor PRIVATE src)
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(test_editor PRIVATE src third_party/fadec)
     target_link_libraries(test_editor PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Test
         QScintilla::QScintilla)
@@ -248,8 +286,8 @@ if(BUILD_TESTING)
         src/generator.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/editor.cpp src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_new_features PRIVATE src)
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(test_new_features PRIVATE src third_party/fadec)
     target_link_libraries(test_new_features PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test
         QScintilla::QScintilla)
@@ -262,8 +300,8 @@ if(BUILD_TESTING)
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_type_selector PRIVATE src)
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(test_type_selector PRIVATE src third_party/fadec)
     target_link_libraries(test_type_selector PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test
         QScintilla::QScintilla)
@@ -283,24 +321,6 @@ if(BUILD_TESTING)
     target_include_directories(test_options_dialog PRIVATE src)
     target_link_libraries(test_options_dialog PRIVATE ${QT}::Widgets ${QT}::Test)
     add_test(NAME test_options_dialog COMMAND test_options_dialog)
-
-    add_executable(test_import_xml tests/test_import_xml.cpp
-        src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
-    target_include_directories(test_import_xml PRIVATE src)
-    target_link_libraries(test_import_xml PRIVATE ${QT}::Core ${QT}::Test)
-    add_test(NAME test_import_xml COMMAND test_import_xml)
-
-    add_executable(test_import_source tests/test_import_source.cpp
-        src/import_source.cpp src/format.cpp src/compose.cpp)
-    target_include_directories(test_import_source PRIVATE src)
-    target_link_libraries(test_import_source PRIVATE ${QT}::Core ${QT}::Test)
-    add_test(NAME test_import_source COMMAND test_import_source)
-
-    add_executable(test_export_xml tests/test_export_xml.cpp
-        src/export_reclass_xml.cpp src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
-    target_include_directories(test_export_xml PRIVATE src)
-    target_link_libraries(test_export_xml PRIVATE ${QT}::Core ${QT}::Test)
-    add_test(NAME test_export_xml COMMAND test_export_xml)
 
     if(WIN32)
         add_executable(test_windbg_provider tests/test_windbg_provider.cpp
@@ -331,6 +351,8 @@ if(BUILD_TESTING)
             COMMENT "Deploying Qt runtime DLLs for tests..."
         )
     endif()
+
+    endif() # BUILD_UI_TESTS
 endif()
 add_subdirectory(plugins/ProcessMemory)
 if(WIN32)
