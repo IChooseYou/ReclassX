@@ -325,7 +325,8 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
             }
             return;
         }
-        int line = m_sci->lineAt(pos);
+        HitInfo hi = hitTest(pos);
+        int line = hi.line;
         int nodeIdx = -1;
         int subLine = 0;
         if (line >= 0 && line < m_meta.size()) {

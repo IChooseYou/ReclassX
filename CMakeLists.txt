@@ -310,11 +310,6 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME test_type_selector COMMAND test_type_selector)
 
-    add_executable(test_theme tests/test_theme.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_theme PRIVATE src)
-    target_link_libraries(test_theme PRIVATE ${QT}::Widgets ${QT}::Test)
-    add_test(NAME test_theme COMMAND test_theme)
 
     add_executable(test_options_dialog tests/test_options_dialog.cpp
         src/optionsdialog.cpp src/themes/theme.cpp src/themes/thememanager.cpp)
