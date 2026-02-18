@@ -1,6 +1,7 @@
 #include "controller.h"
 #include "typeselectorpopup.h"
 #include "providerregistry.h"
+#include "themes/thememanager.h"
 #include <Qsci/qsciscintilla.h>
 #include <QSplitter>
 #include <QFile>
@@ -1726,6 +1727,9 @@ void RcxController::updateCommandRow() {
 TypeSelectorPopup* RcxController::ensurePopup(RcxEditor* editor) {
     if (!m_cachedPopup) {
         m_cachedPopup = new TypeSelectorPopup(editor);
+        // Keep popup colors in sync when theme changes
+        connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+                m_cachedPopup, &TypeSelectorPopup::applyTheme);
         // Pre-warm: force native window creation so first visible show is fast
         m_cachedPopup->warmUp();
     }

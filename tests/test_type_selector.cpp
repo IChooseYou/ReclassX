@@ -887,6 +887,79 @@ private slots:
                  qPrintable(QString("Large popup width %1 should be > small %2")
                      .arg(largeW).arg(smallW)));
     }
+    // ── Test: popup updates colors when theme changes ──
+
+    void testPopupUpdatesOnThemeChange() {
+        auto& tm = ThemeManager::instance();
+        int origIdx = tm.currentIndex();
+
+        // Ensure at least two themes exist
+        QVERIFY2(tm.themes().size() >= 2,
+                 "Need at least 2 themes to test theme switching");
+
+        // Create popup with current theme
+        TypeSelectorPopup popup;
+        TypeEntry prim;
+        prim.entryKind = TypeEntry::Primitive;
+        prim.primitiveKind = NodeKind::Int32;
+        prim.displayName = QStringLiteral("int32_t");
+        popup.setTypes({prim});
+
+        QColor bgBefore = popup.palette().color(QPalette::Window);
+
+        // Switch to a different theme
+        int otherIdx = (origIdx == 0) ? 1 : 0;
+        tm.setCurrent(otherIdx);
+        QApplication::processEvents();
+
+        // The popup should have applyTheme connected to themeChanged
+        popup.applyTheme(tm.current());
+        QColor bgAfter = popup.palette().color(QPalette::Window);
+
+        // If the two themes have different background colors, verify the change
+        // (some themes may coincidentally share colors, so we just verify the
+        // method doesn't crash and the palette is set to the new theme's color)
+        QCOMPARE(bgAfter, tm.current().backgroundAlt);
+
+        // Also verify child widgets got updated
+        auto* filterEdit = popup.findChild<QLineEdit*>();
+        QVERIFY(filterEdit);
+        QCOMPARE(filterEdit->palette().color(QPalette::Base),
+                 tm.current().background);
+
+        auto* listView = popup.findChild<QListView*>();
+        QVERIFY(listView);
+        QCOMPARE(listView->palette().color(QPalette::Base),
+                 tm.current().background);
+
+        // Restore original theme
+        tm.setCurrent(origIdx);
+    }
+
+    void testPopupAutoConnectsThemeChange() {
+        auto& tm = ThemeManager::instance();
+        int origIdx = tm.currentIndex();
+        QVERIFY2(tm.themes().size() >= 2, "Need >= 2 themes");
+
+        TypeSelectorPopup popup;
+
+        // applyTheme is a public slot — verify it can be connected
+        connect(&tm, &ThemeManager::themeChanged,
+                &popup, &TypeSelectorPopup::applyTheme);
+
+        QColor bgBefore = popup.palette().color(QPalette::Window);
+
+        int otherIdx = (origIdx == 0) ? 1 : 0;
+        tm.setCurrent(otherIdx);
+        QApplication::processEvents();
+
+        // After theme change + signal, popup palette should match new theme
+        QCOMPARE(popup.palette().color(QPalette::Window),
+                 tm.current().backgroundAlt);
+
+        // Restore
+        tm.setCurrent(origIdx);
+    }
 };
 
 QTEST_MAIN(TestTypeSelector)

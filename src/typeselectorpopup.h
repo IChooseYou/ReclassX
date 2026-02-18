@@ -16,6 +16,8 @@ class QWidget;
 
 namespace rcx {
 
+struct Theme;
+
 // ── Popup mode ──
 
 enum class TypePopupMode { Root, FieldType, ArrayElement, PointerTarget };
@@ -53,6 +55,7 @@ public:
     void setFont(const QFont& font);
     void setTitle(const QString& title);
     void setMode(TypePopupMode mode);
+    void applyTheme(const Theme& theme);
     void setCurrentNodeSize(int bytes);
     void setTypes(const QVector<TypeEntry>& types, const TypeEntry* current = nullptr);
     void popup(const QPoint& globalPos);
@@ -77,6 +80,7 @@ private:
     QLabel*           m_previewLabel = nullptr;
     QListView*        m_listView     = nullptr;
     QStringListModel* m_model        = nullptr;
+    QFrame*           m_separator    = nullptr;
 
     // Modifier toggles
     QWidget*          m_modRow       = nullptr;

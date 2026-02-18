@@ -279,14 +279,14 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
 
     // Separator
     {
-        auto* sep = new QFrame;
-        sep->setFrameShape(QFrame::HLine);
-        sep->setFrameShadow(QFrame::Plain);
+        m_separator = new QFrame;
+        m_separator->setFrameShape(QFrame::HLine);
+        m_separator->setFrameShadow(QFrame::Plain);
         QPalette sepPal = pal;
         sepPal.setColor(QPalette::WindowText, theme.border);
-        sep->setPalette(sepPal);
-        sep->setFixedHeight(1);
-        layout->addWidget(sep);
+        m_separator->setPalette(sepPal);
+        m_separator->setFixedHeight(1);
+        layout->addWidget(m_separator);
     }
 
     // Row 3: Modifier toggles [ plain ] [ * ] [ ** ] [ [n] ]
@@ -454,6 +454,60 @@ void TypeSelectorPopup::setFont(const QFont& font) {
     auto* delegate = static_cast<TypeSelectorDelegate*>(m_listView->itemDelegate());
     if (delegate)
         delegate->setFont(font);
+}
+
+void TypeSelectorPopup::applyTheme(const Theme& theme) {
+    QPalette pal;
+    pal.setColor(QPalette::Window,          theme.backgroundAlt);
+    pal.setColor(QPalette::WindowText,      theme.text);
+    pal.setColor(QPalette::Base,            theme.background);
+    pal.setColor(QPalette::AlternateBase,   theme.surface);
+    pal.setColor(QPalette::Text,            theme.text);
+    pal.setColor(QPalette::Button,          theme.button);
+    pal.setColor(QPalette::ButtonText,      theme.text);
+    pal.setColor(QPalette::Highlight,       theme.hover);
+    pal.setColor(QPalette::HighlightedText, theme.text);
+    setPalette(pal);
+
+    m_titleLabel->setPalette(pal);
+    m_filterEdit->setPalette(pal);
+    m_listView->setPalette(pal);
+    m_previewLabel->setPalette(pal);
+    m_arrayCountEdit->setPalette(pal);
+
+    // Separator
+    QPalette sepPal = pal;
+    sepPal.setColor(QPalette::WindowText, theme.border);
+    m_separator->setPalette(sepPal);
+
+    // Esc button
+    m_escLabel->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: none; padding: 2px 6px; }"
+        "QToolButton:hover { color: %2; }")
+        .arg(theme.textDim.name(), theme.indHoverSpan.name()));
+
+    // Create button
+    m_createBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: none; padding: 3px 6px; }"
+        "QToolButton:hover { color: %2; background: %3; }")
+        .arg(theme.textMuted.name(), theme.text.name(), theme.hover.name()));
+
+    // Modifier toggle buttons
+    QString btnStyle = QStringLiteral(
+        "QToolButton { color: %1; background: %2; border: 1px solid %3;"
+        "  padding: 2px 8px; border-radius: 3px; }"
+        "QToolButton:checked { color: %4; background: %5; border-color: %5; }"
+        "QToolButton:hover:!checked { background: %6; }")
+        .arg(theme.textDim.name(), theme.background.name(), theme.border.name(),
+             theme.text.name(), theme.selected.name(), theme.hover.name());
+    m_btnPlain->setStyleSheet(btnStyle);
+    m_btnPtr->setStyleSheet(btnStyle);
+    m_btnDblPtr->setStyleSheet(btnStyle);
+    m_btnArray->setStyleSheet(btnStyle);
+
+    // Preview label
+    m_previewLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; padding: 1px 6px; }").arg(theme.syntaxType.name()));
 }
 
 void TypeSelectorPopup::setTitle(const QString& title) {
