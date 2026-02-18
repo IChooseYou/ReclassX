@@ -793,6 +793,100 @@ private slots:
         delete splitter;
         delete doc;
     }
+    // ── Test: SVG icon and gutter scale with font size ──
+
+    void testDelegateIconScalesWithFont() {
+        // Create a popup and set two different font sizes.
+        // The delegate sizeHint row height should scale with font.
+        TypeSelectorPopup popup;
+
+        TypeEntry prim;
+        prim.entryKind = TypeEntry::Primitive;
+        prim.primitiveKind = NodeKind::Int32;
+        prim.displayName = QStringLiteral("int32_t");
+
+        TypeEntry comp;
+        comp.entryKind = TypeEntry::Composite;
+        comp.structId = 100;
+        comp.displayName = QStringLiteral("TestStruct");
+        comp.classKeyword = QStringLiteral("struct");
+
+        // Small font
+        QFont small(QStringLiteral("Consolas"), 9);
+        popup.setFont(small);
+        popup.setTypes({prim, comp});
+        popup.popup(QPoint(-9999, -9999));  // offscreen
+        QApplication::processEvents();
+
+        auto* listView = popup.findChild<QListView*>();
+        QVERIFY(listView);
+        auto* delegate = listView->itemDelegate();
+        QVERIFY(delegate);
+
+        // Find first non-section row for consistent measurement
+        int dataRow = -1;
+        for (int i = 0; i < listView->model()->rowCount(); i++) {
+            QSize h = delegate->sizeHint(QStyleOptionViewItem(), listView->model()->index(i, 0));
+            // Non-section rows are taller (font.height + 8 vs + 2)
+            if (h.height() > QFontMetrics(small).height() + 4) { dataRow = i; break; }
+        }
+        QVERIFY2(dataRow >= 0, "Should find a non-section row");
+
+        QSize smallHint = delegate->sizeHint(QStyleOptionViewItem(), listView->model()->index(dataRow, 0));
+        popup.hide();
+
+        // Large font (simulates zoomed editor)
+        QFont large(QStringLiteral("Consolas"), 18);
+        popup.setFont(large);
+        popup.setTypes({prim, comp});
+        popup.popup(QPoint(-9999, -9999));
+        QApplication::processEvents();
+
+        QSize largeHint = delegate->sizeHint(QStyleOptionViewItem(), listView->model()->index(dataRow, 0));
+        popup.hide();
+
+        // Large font should produce taller rows than small font
+        QVERIFY2(largeHint.height() > smallHint.height(),
+                 qPrintable(QString("Large hint %1 should be > small hint %2")
+                     .arg(largeHint.height()).arg(smallHint.height())));
+
+        // The ratio should roughly match the font size ratio (18/9 = 2x)
+        double ratio = double(largeHint.height()) / double(smallHint.height());
+        QVERIFY2(ratio > 1.4, qPrintable(QString("Row height ratio %1 should be > 1.4").arg(ratio)));
+    }
+
+    void testPopupWidthScalesWithFont() {
+        TypeSelectorPopup popup;
+
+        TypeEntry comp;
+        comp.entryKind = TypeEntry::Composite;
+        comp.structId = 100;
+        comp.displayName = QStringLiteral("MyLongStructName");
+        comp.classKeyword = QStringLiteral("struct");
+        popup.setTypes({comp});
+
+        // Small font
+        QFont small(QStringLiteral("Consolas"), 9);
+        popup.setFont(small);
+        popup.popup(QPoint(-9999, -9999));
+        QApplication::processEvents();
+        int smallW = popup.width();
+        popup.hide();
+
+        // Large font
+        QFont large(QStringLiteral("Consolas"), 18);
+        popup.setFont(large);
+        popup.setTypes({comp});
+        popup.popup(QPoint(-9999, -9999));
+        QApplication::processEvents();
+        int largeW = popup.width();
+        popup.hide();
+
+        // Popup with larger font should be wider
+        QVERIFY2(largeW > smallW,
+                 qPrintable(QString("Large popup width %1 should be > small %2")
+                     .arg(largeW).arg(smallW)));
+    }
 };
 
 QTEST_MAIN(TestTypeSelector)

@@ -97,6 +97,12 @@ public:
         int h = option.rect.height();
         int w = option.rect.width();
 
+        // Scale metrics from font height
+        QFontMetrics fmMain(m_font);
+        int iconSz = fmMain.height();            // icon matches text height
+        int gutterW = fmMain.horizontalAdvance(QChar(0x25B8)) + 4;
+        int iconColW = iconSz + 4;
+
         // Section: centered dim text with horizontal rules
         if (isSection) {
             painter->setPen(t.textDim);
@@ -133,18 +139,18 @@ public:
             if (isCurrent) {
                 painter->setPen(t.text);
                 painter->setFont(m_font);
-                painter->drawText(QRect(x, y, 10, h), Qt::AlignCenter,
+                painter->drawText(QRect(x, y, gutterW, h), Qt::AlignCenter,
                                   QString(QChar(0x25B8)));
             }
         }
-        x += 10;
+        x += gutterW;
 
-        // Icon 16x16 — only for composite entries
+        // Icon (scaled to font height) — only for composite entries
         bool hasIcon = (m_filtered && row >= 0 && row < m_filtered->size()
                         && (*m_filtered)[row].entryKind == TypeEntry::Composite);
         if (hasIcon) {
             static QIcon structIcon(QStringLiteral(":/vsicons/symbol-structure.svg"));
-            QPixmap pm = structIcon.pixmap(16, 16);
+            QPixmap pm = structIcon.pixmap(iconSz, iconSz);
             if (isDisabled) {
                 // Paint dimmed
                 QPixmap dimmed(pm.size());
@@ -153,12 +159,12 @@ public:
                 p.setOpacity(0.35);
                 p.drawPixmap(0, 0, pm);
                 p.end();
-                painter->drawPixmap(x, y + (h - 16) / 2, dimmed);
+                painter->drawPixmap(x, y + (h - iconSz) / 2, dimmed);
             } else {
-                structIcon.paint(painter, x, y + (h - 16) / 2, 16, 16);
+                structIcon.paint(painter, x, y + (h - iconSz) / 2, iconSz, iconSz);
             }
         }
-        x += 20;
+        x += iconColW;
 
         // Text
         QColor textColor;
@@ -498,7 +504,9 @@ void TypeSelectorPopup::popup(const QPoint& globalPos) {
         QString text = t.classKeyword.isEmpty()
             ? t.displayName
             : (t.classKeyword + QStringLiteral(" ") + t.displayName);
-        int w = 10 + 20 + fm.horizontalAdvance(text) + 16;
+        int gutterW = fm.horizontalAdvance(QChar(0x25B8)) + 4;
+        int iconColW = fm.height() + 4;
+        int w = gutterW + iconColW + fm.horizontalAdvance(text) + 16;
         if (w > maxTextW) maxTextW = w;
     }
     int popupW = qBound(280, maxTextW + 24, 500);
