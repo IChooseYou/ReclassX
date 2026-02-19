@@ -394,6 +394,65 @@ private slots:
         QApplication::processEvents();
         QCOMPARE(countNodes(), before);
     }
+
+    // ── Change to Ptr* creates class and sets refId ──
+
+    void testChangeToPtrStarCreatesClassAndSetsRef() {
+        // Add a Hex64 node to the root struct
+        uint64_t rootId = m_doc->tree.nodes[0].id;
+        m_ctrl->insertNode(rootId, 16, NodeKind::Hex64, "ptrField");
+        QApplication::processEvents();
+
+        int ptrIdx = findNode("ptrField");
+        QVERIFY(ptrIdx >= 0);
+        uint64_t ptrNodeId = m_doc->tree.nodes[ptrIdx].id;
+        int before = countNodes();
+
+        // Convert to typed pointer
+        m_ctrl->convertToTypedPointer(ptrNodeId);
+        QApplication::processEvents();
+
+        // Re-find after tree mutation
+        ptrIdx = -1;
+        for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+            if (m_doc->tree.nodes[i].id == ptrNodeId) { ptrIdx = i; break; }
+        }
+        QVERIFY(ptrIdx >= 0);
+
+        // Verify: node kind changed to Pointer64
+        QCOMPARE(m_doc->tree.nodes[ptrIdx].kind, NodeKind::Pointer64);
+
+        // Verify: node.refId != 0
+        uint64_t refId = m_doc->tree.nodes[ptrIdx].refId;
+        QVERIFY(refId != 0);
+
+        // Verify: a new Struct node exists with the refId as its id
+        int structIdx = m_doc->tree.indexOfId(refId);
+        QVERIFY(structIdx >= 0);
+        QCOMPARE(m_doc->tree.nodes[structIdx].kind, NodeKind::Struct);
+
+        // Verify: the new struct has children (Hex64 fields)
+        auto children = m_doc->tree.childrenOf(refId);
+        QVERIFY(children.size() == 16);
+        for (int ci : children)
+            QCOMPARE(m_doc->tree.nodes[ci].kind, NodeKind::Hex64);
+
+        // Verify: total nodes increased by 1 struct + 16 children = 17
+        QCOMPARE(countNodes(), before + 17);
+
+        // Verify: undo restores the original Hex64 kind and refId==0
+        m_doc->undoStack.undo();
+        QApplication::processEvents();
+
+        ptrIdx = -1;
+        for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
+            if (m_doc->tree.nodes[i].id == ptrNodeId) { ptrIdx = i; break; }
+        }
+        QVERIFY(ptrIdx >= 0);
+        QCOMPARE(m_doc->tree.nodes[ptrIdx].kind, NodeKind::Hex64);
+        QCOMPARE(m_doc->tree.nodes[ptrIdx].refId, (uint64_t)0);
+        QCOMPARE(countNodes(), before);
+    }
 };
 
 QTEST_MAIN(TestContextMenu)

@@ -20,6 +20,7 @@
 #include <QLabel>
 #include <QToolButton>
 #include <QScreen>
+#include <QScrollBar>
 #include <functional>
 #include "themes/thememanager.h"
 
@@ -393,6 +394,24 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
     m_sci->installEventFilter(this);
     m_sci->viewport()->installEventFilter(this);
     m_sci->viewport()->setMouseTracking(true);
+
+    // Recalculate hover when the viewport scrolls (scrollbar drag, wheel
+    // deceleration, etc.) so the highlight tracks whatever is under the cursor.
+    connect(m_sci->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, [this]() {
+        if (m_editState.active || !m_hoverInside) return;
+        m_lastHoverPos = m_sci->viewport()->mapFromGlobal(QCursor::pos());
+        m_hoverInside = m_sci->viewport()->rect().contains(m_lastHoverPos);
+        auto h = hitTest(m_lastHoverPos);
+        uint64_t newHoverId = (m_hoverInside && h.line >= 0) ? h.nodeId : 0;
+        int newHoverLine = (m_hoverInside && h.line >= 0) ? h.line : -1;
+        if (newHoverId != m_hoveredNodeId || newHoverLine != m_hoveredLine) {
+            m_hoveredNodeId = newHoverId;
+            m_hoveredLine = newHoverLine;
+            applyHoverHighlight();
+        }
+        applyHoverCursor();
+    });
 
     // Hover cursor is applied synchronously in eventFilter (no timer).
 

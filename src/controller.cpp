@@ -604,6 +604,16 @@ void RcxController::scrollToNodeId(uint64_t nodeId) {
         editor->scrollToNodeId(nodeId);
 }
 
+void RcxController::setTrackValues(bool on) {
+    m_trackValues = on;
+    if (!on) {
+        m_valueHistory.clear();
+        for (auto& lm : m_lastResult.meta)
+            lm.heatLevel = 0;
+        refresh();
+    }
+}
+
 void RcxController::refresh() {
     // Bracket compose with thread-local doc pointer for type name resolution
     s_composeDoc = m_doc;
@@ -656,7 +666,7 @@ void RcxController::refresh() {
         else if (m_doc->provider && m_doc->provider->isValid() && m_doc->provider->isLive())
             prov = m_doc->provider.get();
 
-        if (prov) {
+        if (m_trackValues && prov) {
             for (auto& lm : m_lastResult.meta) {
                 if (lm.nodeIdx < 0 || lm.nodeIdx >= m_doc->tree.nodes.size()) continue;
                 if (isSyntheticLine(lm) || lm.isContinuation) continue;
@@ -1181,6 +1191,128 @@ void RcxController::duplicateNode(int nodeIdx) {
     m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n, adjs}));
 }
 
+void RcxController::convertToTypedPointer(uint64_t nodeId) {
+    int ni = m_doc->tree.indexOfId(nodeId);
+    if (ni < 0) return;
+    const Node& node = m_doc->tree.nodes[ni];
+
+    // Determine pointer kind from current node size
+    NodeKind ptrKind;
+    if (node.byteSize() >= 8 || node.kind == NodeKind::Pointer64)
+        ptrKind = NodeKind::Pointer64;
+    else
+        ptrKind = NodeKind::Pointer32;
+
+    // Generate unique struct name: "NewClass", "NewClass_2", "NewClass_3", ...
+    QString baseName = QStringLiteral("NewClass");
+    QString typeName = baseName;
+    int suffix = 2;
+    while (true) {
+        bool exists = false;
+        for (const auto& n : m_doc->tree.nodes) {
+            if (n.kind == NodeKind::Struct && n.structTypeName == typeName) {
+                exists = true; break;
+            }
+        }
+        if (!exists) break;
+        typeName = QStringLiteral("%1_%2").arg(baseName).arg(suffix++);
+    }
+
+    // Create the new root struct node
+    Node rootStruct;
+    rootStruct.kind = NodeKind::Struct;
+    rootStruct.name = QStringLiteral("instance");
+    rootStruct.structTypeName = typeName;
+    rootStruct.classKeyword = QStringLiteral("class");
+    rootStruct.parentId = 0;
+    rootStruct.offset = 0;
+    rootStruct.id = m_doc->tree.reserveId();
+
+    // Create child Hex64 fields for the new struct
+    constexpr int kDefaultFields = 16;
+    QVector<Node> children;
+    for (int i = 0; i < kDefaultFields; i++) {
+        Node c;
+        c.kind = NodeKind::Hex64;
+        c.name = QStringLiteral("field_%1").arg(i * 8, 2, 16, QChar('0'));
+        c.parentId = rootStruct.id;
+        c.offset = i * 8;
+        c.id = m_doc->tree.reserveId();
+        children.append(c);
+    }
+
+    uint64_t oldRefId = node.refId;
+
+    m_suppressRefresh = true;
+    m_doc->undoStack.beginMacro(QStringLiteral("Change to ptr*"));
+
+    // 1. Change kind to Pointer64/32 (if not already)
+    if (node.kind != ptrKind)
+        changeNodeKind(ni, ptrKind);
+
+    // 2. Insert the new root struct
+    m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{rootStruct, {}}));
+
+    // 3. Insert its children
+    for (const Node& c : children)
+        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{c, {}}));
+
+    // 4. Set refId to point to the new struct
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::ChangePointerRef{nodeId, oldRefId, rootStruct.id}));
+
+    m_doc->undoStack.endMacro();
+    m_suppressRefresh = false;
+    refresh();
+}
+
+void RcxController::splitHexNode(uint64_t nodeId) {
+    int ni = m_doc->tree.indexOfId(nodeId);
+    if (ni < 0) return;
+    const Node& node = m_doc->tree.nodes[ni];
+
+    NodeKind halfKind;
+    int halfSize;
+    if (node.kind == NodeKind::Hex64)      { halfKind = NodeKind::Hex32; halfSize = 4; }
+    else if (node.kind == NodeKind::Hex32)  { halfKind = NodeKind::Hex16; halfSize = 2; }
+    else if (node.kind == NodeKind::Hex16)  { halfKind = NodeKind::Hex8;  halfSize = 1; }
+    else return;
+
+    uint64_t parentId = node.parentId;
+    int baseOffset = node.offset;
+    QString baseName = node.name;
+
+    m_suppressRefresh = true;
+    m_doc->undoStack.beginMacro(QStringLiteral("Split Hex node"));
+
+    // Remove the original node
+    QVector<Node> subtree;
+    subtree.append(node);
+    m_doc->undoStack.push(new RcxCommand(this,
+        cmd::Remove{nodeId, subtree, {}}));
+
+    // Insert two half-sized nodes
+    Node lo;
+    lo.kind = halfKind;
+    lo.name = baseName;
+    lo.parentId = parentId;
+    lo.offset = baseOffset;
+    lo.id = m_doc->tree.reserveId();
+    m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{lo, {}}));
+
+    Node hi;
+    hi.kind = halfKind;
+    hi.name = baseName + QStringLiteral("_hi");
+    hi.parentId = parentId;
+    hi.offset = baseOffset + halfSize;
+    hi.id = m_doc->tree.reserveId();
+    m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{hi, {}}));
+
+    m_doc->undoStack.endMacro();
+    m_suppressRefresh = false;
+    refresh();
+}
+
 void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
                                      int subLine, const QPoint& globalPos) {
     auto icon = [](const char* name) { return QIcon(QStringLiteral(":/vsicons/%1").arg(name)); };
@@ -1279,6 +1411,13 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         });
 
         menu.addSeparator();
+        {
+            auto* act = menu.addAction("Track Value Changes");
+            act->setCheckable(true);
+            act->setChecked(m_trackValues);
+            connect(act, &QAction::toggled, this, &RcxController::setTrackValues);
+        }
+        menu.addSeparator();
 
         menu.addAction(icon("files.svg"), QString("Duplicate %1 nodes").arg(count), [this, ids]() {
             for (uint64_t id : ids) {
@@ -1368,6 +1507,32 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
             });
             addedQuickConvert = true;
         }
+        // "Change to ptr*" — convert hex/void-ptr to typed pointer with auto-created class
+        if (node.kind == NodeKind::Hex64 || node.kind == NodeKind::Hex32
+            || ((node.kind == NodeKind::Pointer64 || node.kind == NodeKind::Pointer32)
+                && node.refId == 0)) {
+            menu.addAction("Change to ptr*", [this, nodeId]() {
+                convertToTypedPointer(nodeId);
+            });
+            addedQuickConvert = true;
+        }
+        // Split hex node into two half-sized hex nodes
+        if (node.kind == NodeKind::Hex64) {
+            menu.addAction("Change to hex32+hex32", [this, nodeId]() {
+                splitHexNode(nodeId);
+            });
+            addedQuickConvert = true;
+        } else if (node.kind == NodeKind::Hex32) {
+            menu.addAction("Change to hex16+hex16", [this, nodeId]() {
+                splitHexNode(nodeId);
+            });
+            addedQuickConvert = true;
+        } else if (node.kind == NodeKind::Hex16) {
+            menu.addAction("Change to hex8+hex8", [this, nodeId]() {
+                splitHexNode(nodeId);
+            });
+            addedQuickConvert = true;
+        }
         if (addedQuickConvert)
             menu.addSeparator();
 
@@ -1387,6 +1552,15 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         menu.addAction("Change &Type\tT", [editor, line]() {
             editor->beginInlineEdit(EditTarget::Type, line);
         });
+
+        menu.addSeparator();
+        {
+            auto* act = menu.addAction("Track Value Changes");
+            act->setCheckable(true);
+            act->setChecked(m_trackValues);
+            connect(act, &QAction::toggled, this, &RcxController::setTrackValues);
+        }
+        menu.addSeparator();
 
         // Convert to Hex nodes (decompose non-hex types into Hex64/32/16/8)
         if (!isHexNode(node.kind) && node.kind != NodeKind::Struct && node.kind != NodeKind::Array) {
@@ -1497,6 +1671,13 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         refresh();
     });
 
+    menu.addSeparator();
+    {
+        auto* act = menu.addAction("Track Value Changes");
+        act->setCheckable(true);
+        act->setChecked(m_trackValues);
+        connect(act, &QAction::toggled, this, &RcxController::setTrackValues);
+    }
     menu.addSeparator();
 
     menu.addAction(icon("arrow-left.svg"), "Undo", [this]() {

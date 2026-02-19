@@ -94,6 +94,8 @@ public:
     void materializeRefChildren(int nodeIdx);
     void setNodeValue(int nodeIdx, int subLine, const QString& text, bool isAscii = false);
     void duplicateNode(int nodeIdx);
+    void convertToTypedPointer(uint64_t nodeId);
+    void splitHexNode(uint64_t nodeId);
     void showContextMenu(RcxEditor* editor, int line, int nodeIdx, int subLine, const QPoint& globalPos);
     void batchRemoveNodes(const QVector<int>& nodeIndices);
     void batchChangeKind(const QVector<int>& nodeIndices, NodeKind newKind);
@@ -122,6 +124,10 @@ public:
     const QVector<SavedSourceEntry>& savedSources() const { return m_savedSources; }
     int activeSourceIndex() const { return m_activeSourceIdx; }
     void switchSource(int idx) { switchToSavedSource(idx); }
+
+    // Value tracking toggle (per-tab, off by default)
+    bool trackValues() const { return m_trackValues; }
+    void setTrackValues(bool on);
 
     // Test accessor
     const QHash<uint64_t, ValueHistory>& valueHistory() const { return m_valueHistory; }
@@ -154,6 +160,7 @@ private:
     PageMap         m_prevPages;
     QSet<int64_t>   m_changedOffsets;
     QHash<uint64_t, ValueHistory> m_valueHistory;
+    bool            m_trackValues = false;
     uint64_t        m_refreshGen = 0;
     uint64_t        m_readGen = 0;
     bool            m_readInFlight = false;
