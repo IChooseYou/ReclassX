@@ -653,7 +653,11 @@ void TypeSelectorPopup::applyFilter(const QString& text) {
             composites.append(t);
     }
 
-    // For non-Root modes, sort primitives: same-size first, then rest
+    auto alphabetical = [](const TypeEntry& a, const TypeEntry& b) {
+        return a.displayName.compare(b.displayName, Qt::CaseInsensitive) < 0;
+    };
+
+    // For non-Root modes, sort primitives: same-size first, then rest — alphabetical within each group
     if (m_mode != TypePopupMode::Root && m_currentNodeSize > 0 && !primitives.isEmpty()) {
         QVector<TypeEntry> sameSize, other;
         for (const auto& p : primitives) {
@@ -662,7 +666,11 @@ void TypeSelectorPopup::applyFilter(const QString& text) {
             else
                 other.append(p);
         }
+        std::sort(sameSize.begin(), sameSize.end(), alphabetical);
+        std::sort(other.begin(), other.end(), alphabetical);
         primitives = sameSize + other;
+    } else {
+        std::sort(primitives.begin(), primitives.end(), alphabetical);
     }
 
     // Helper lambdas for appending sections
