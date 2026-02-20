@@ -12,6 +12,8 @@
 #include <QPainter>
 #include <QCursor>
 #include <QScreen>
+#include <QMainWindow>
+#include <QStatusBar>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
 #include "editor.h"
@@ -2044,6 +2046,104 @@ private slots:
                  "Innermost field 'value = 0x3e7' should appear in chain expansion");
 
         m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: resize grip equidistant from right and bottom window edges ──
+    void testResizeGripCornerSymmetry() {
+        // Reproduce the exact MainWindow status bar + grip setup
+        QMainWindow win;
+        win.resize(400, 300);
+        win.statusBar()->setSizeGripEnabled(false);
+        win.statusBar()->setContentsMargins(0, 4, 0, 0);
+
+        // Inline replica of the ResizeGrip paint (same constants as main.cpp)
+        class Grip : public QWidget {
+        public:
+            explicit Grip(QWidget* p) : QWidget(p) { setFixedSize(16, 16); }
+        protected:
+            void paintEvent(QPaintEvent*) override {
+                QPainter p(this);
+                p.setRenderHint(QPainter::Antialiasing);
+                p.setPen(Qt::NoPen);
+                p.setBrush(Qt::red);  // high-contrast so we can find it
+                const double r = 1.0, s = 4.0;
+                double bx = width() - 5, by = height() - 4;
+                p.drawEllipse(QPointF(bx,         by), r, r);
+                p.drawEllipse(QPointF(bx - s,     by), r, r);
+                p.drawEllipse(QPointF(bx - 2 * s, by), r, r);
+                p.drawEllipse(QPointF(bx,         by - s), r, r);
+                p.drawEllipse(QPointF(bx - s,     by - s), r, r);
+                p.drawEllipse(QPointF(bx,         by - 2 * s), r, r);
+            }
+        };
+
+        auto* grip = new Grip(&win);
+        win.statusBar()->addPermanentWidget(grip);
+
+        // Use a known background so non-grip pixels are easy to identify
+        QPalette pal = win.statusBar()->palette();
+        pal.setColor(QPalette::Window, QColor(30, 30, 30));
+        win.statusBar()->setPalette(pal);
+        win.statusBar()->setAutoFillBackground(true);
+
+        win.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&win));
+        QTest::qWait(100);  // let paint settle
+
+        // Grab just the window contents (no DWM shadow)
+        QPixmap px = win.grab();
+        QImage img = px.toImage().convertToFormat(QImage::Format_ARGB32);
+        int W = img.width();
+        int H = img.height();
+        QVERIFY(W > 50);
+        QVERIFY(H > 50);
+
+        // Scan from bottom-right to find the bottommost-rightmost red pixel
+        // (the corner dot of the grip triangle)
+        int gripRight = -1, gripBottom = -1;
+        for (int y = H - 1; y >= H - 40 && gripBottom < 0; --y) {
+            for (int x = W - 1; x >= W - 40; --x) {
+                QColor c(img.pixel(x, y));
+                if (c.red() > 180 && c.green() < 80 && c.blue() < 80) {
+                    gripRight = x;
+                    gripBottom = y;
+                    break;
+                }
+            }
+            if (gripBottom >= 0) break;
+        }
+
+        QVERIFY2(gripRight >= 0 && gripBottom >= 0,
+                 "Could not find red grip dot in bottom-right corner");
+
+        int gapRight  = (W - 1) - gripRight;
+        int gapBottom = (H - 1) - gripBottom;
+
+        // Save diagnostic image with markers
+        {
+            QImage diag = img.copy();
+            QPainter dp(&diag);
+            dp.setPen(QPen(Qt::cyan, 1));
+            // Mark the found dot
+            dp.drawRect(gripRight - 3, gripBottom - 3, 6, 6);
+            // Draw gap measurement lines
+            dp.setPen(QPen(Qt::yellow, 1));
+            dp.drawLine(gripRight, gripBottom, W - 1, gripBottom);  // right gap
+            dp.drawLine(gripRight, gripBottom, gripRight, H - 1);   // bottom gap
+            dp.end();
+            diag.save("grip_corner_diag.png");
+        }
+
+        QString msg = QString("gapRight=%1  gapBottom=%2  (diff=%3) gripPos=(%4,%5) winSize=%6x%7")
+            .arg(gapRight).arg(gapBottom).arg(qAbs(gapRight - gapBottom))
+            .arg(gripRight).arg(gripBottom).arg(W).arg(H);
+
+        // The gaps must be equal (symmetric corner placement)
+        QVERIFY2(qAbs(gapRight - gapBottom) <= 1,
+                 qPrintable("Grip not equidistant from edges: " + msg));
+
+        // Also log the values even on pass
+        qDebug() << "Grip corner symmetry:" << msg;
     }
 };
 

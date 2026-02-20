@@ -45,6 +45,8 @@
 #include <Qsci/qscilexercpp.h>
 #include <QProxyStyle>
 #include <QDesktopServices>
+#include <QWindow>
+#include <QMouseEvent>
 #include "themes/thememanager.h"
 #include "themes/themeeditor.h"
 #include "optionsdialog.h"
@@ -496,11 +498,55 @@ void MainWindow::createMenus() {
     Qt5Qt6AddAction(help, "&About Reclass", QKeySequence::UnknownKey, makeIcon(":/vsicons/question.svg"), this, &MainWindow::about);
 }
 
+// ── Themed resize grip (replaces ugly default QSizeGrip) ──
+class ResizeGrip : public QWidget {
+public:
+    explicit ResizeGrip(QWidget* parent) : QWidget(parent) {
+        setFixedSize(16, 16);
+        setCursor(Qt::SizeFDiagCursor);
+        m_color = rcx::ThemeManager::instance().current().textFaint;
+    }
+    void setGripColor(const QColor& c) { m_color = c; update(); }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_color);
+        // 6 dots in a triangle pointing bottom-right (VS2022 style)
+        const double r = 1.0, s = 4.0;
+        double bx = width() - 5, by = height() - 4;
+        // bottom row: 3 dots
+        p.drawEllipse(QPointF(bx,         by), r, r);
+        p.drawEllipse(QPointF(bx - s,     by), r, r);
+        p.drawEllipse(QPointF(bx - 2 * s, by), r, r);
+        // middle row: 2 dots
+        p.drawEllipse(QPointF(bx,         by - s), r, r);
+        p.drawEllipse(QPointF(bx - s,     by - s), r, r);
+        // top row: 1 dot
+        p.drawEllipse(QPointF(bx,         by - 2 * s), r, r);
+    }
+    void mousePressEvent(QMouseEvent* e) override {
+        if (e->button() == Qt::LeftButton) {
+            window()->windowHandle()->startSystemResize(Qt::BottomEdge | Qt::RightEdge);
+            e->accept();
+        }
+    }
+private:
+    QColor m_color;
+};
+
 void MainWindow::createStatusBar() {
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setContentsMargins(10, 0, 0, 0);
-    statusBar()->setContentsMargins(0, 4, 0, 4);
+    statusBar()->setContentsMargins(0, 4, 0, 0);
+    statusBar()->setSizeGripEnabled(false);  // disable ugly default grip
     statusBar()->addWidget(m_statusLabel, 1);
+
+    auto* grip = new ResizeGrip(this);
+    grip->setObjectName("resizeGrip");
+    statusBar()->addPermanentWidget(grip);
+
     {
         const auto& t = ThemeManager::instance().current();
         QPalette sbPal = statusBar()->palette();
@@ -508,6 +554,14 @@ void MainWindow::createStatusBar() {
         sbPal.setColor(QPalette::WindowText, t.textDim);
         statusBar()->setPalette(sbPal);
         statusBar()->setAutoFillBackground(true);
+    }
+
+    // Sync status bar font with editor font at startup
+    {
+        QString fontName = QSettings("Reclass", "Reclass").value("font", "JetBrains Mono").toString();
+        QFont f(fontName, 12);
+        f.setFixedPitch(true);
+        statusBar()->setFont(f);
     }
 }
 
@@ -1062,12 +1116,14 @@ void MainWindow::applyTheme(const Theme& theme) {
     // Re-style ✕ close buttons on MDI tabs
     styleTabCloseButtons();
 
-    // Status bar
+    // Status bar + resize grip
     {
         QPalette sbPal = statusBar()->palette();
         sbPal.setColor(QPalette::Window, theme.background);
         sbPal.setColor(QPalette::WindowText, theme.textDim);
         statusBar()->setPalette(sbPal);
+        auto* grip = statusBar()->findChild<ResizeGrip*>("resizeGrip");
+        if (grip) grip->setGripColor(theme.textFaint);
     }
 
     // Workspace tree: text color matches menu bar
@@ -1076,6 +1132,15 @@ void MainWindow::applyTheme(const Theme& theme) {
         tp.setColor(QPalette::Text, theme.textDim);
         m_workspaceTree->setPalette(tp);
     }
+
+    // Dock titlebar: restyle label + close button
+    if (m_dockTitleLabel)
+        m_dockTitleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(theme.textDim.name()));
+    if (m_dockCloseBtn)
+        m_dockCloseBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: none; padding: 0px 4px 2px 4px; font-size: 12px; }"
+            "QToolButton:hover { color: %2; }")
+            .arg(theme.textDim.name(), theme.indHoverSpan.name()));
 
     // Split pane tab widgets
     for (auto& state : m_tabs) {
@@ -1165,6 +1230,9 @@ void MainWindow::setEditorFont(const QString& fontName) {
     // Sync workspace tree font
     if (m_workspaceTree)
         m_workspaceTree->setFont(f);
+    // Sync dock titlebar font
+    if (m_dockTitleLabel)
+        m_dockTitleLabel->setFont(f);
     // Sync status bar font
     statusBar()->setFont(f);
 }
@@ -1644,6 +1712,42 @@ void MainWindow::createWorkspaceDock() {
     m_workspaceDock = new QDockWidget("Project Tree", this);
     m_workspaceDock->setObjectName("WorkspaceDock");
     m_workspaceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_workspaceDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
+
+    // Custom titlebar: label + ✕ close button (matches MDI tab style)
+    {
+        const auto& t = ThemeManager::instance().current();
+
+        auto* titleBar = new QWidget(m_workspaceDock);
+        auto* layout = new QHBoxLayout(titleBar);
+        layout->setContentsMargins(6, 2, 2, 2);
+        layout->setSpacing(0);
+
+        m_dockTitleLabel = new QLabel("Project Tree", titleBar);
+        m_dockTitleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(t.textDim.name()));
+        {
+            QString fontName = QSettings("Reclass", "Reclass").value("font", "JetBrains Mono").toString();
+            QFont f(fontName, 12);
+            f.setFixedPitch(true);
+            m_dockTitleLabel->setFont(f);
+        }
+        layout->addWidget(m_dockTitleLabel);
+
+        layout->addStretch();
+
+        m_dockCloseBtn = new QToolButton(titleBar);
+        m_dockCloseBtn->setText(QStringLiteral("\u2715"));
+        m_dockCloseBtn->setAutoRaise(true);
+        m_dockCloseBtn->setCursor(Qt::PointingHandCursor);
+        m_dockCloseBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: none; padding: 0px 4px 2px 4px; font-size: 12px; }"
+            "QToolButton:hover { color: %2; }")
+            .arg(t.textDim.name(), t.indHoverSpan.name()));
+        connect(m_dockCloseBtn, &QToolButton::clicked, m_workspaceDock, &QDockWidget::close);
+        layout->addWidget(m_dockCloseBtn);
+
+        m_workspaceDock->setTitleBarWidget(titleBar);
+    }
 
     m_workspaceTree = new QTreeView(m_workspaceDock);
     m_workspaceModel = new QStandardItemModel(this);

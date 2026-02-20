@@ -124,6 +124,8 @@ private:
     QDockWidget*        m_workspaceDock  = nullptr;
     QTreeView*          m_workspaceTree  = nullptr;
     QStandardItemModel* m_workspaceModel = nullptr;
+    QLabel*             m_dockTitleLabel = nullptr;
+    QToolButton*        m_dockCloseBtn   = nullptr;
     void createWorkspaceDock();
     void rebuildWorkspaceModel();
     void updateBorderColor(const QColor& color);
