@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QVBoxLayout>
 #include <QToolButton>
+#include <QButtonGroup>
 #include <QLineEdit>
 #include <QListView>
 #include <QStringListModel>
@@ -498,6 +499,7 @@ private slots:
         TypeSpec spec = parseTypeSpec("Ball*");
         QCOMPARE(spec.baseName, QString("Ball"));
         QVERIFY(spec.isPointer);
+        QCOMPARE(spec.ptrDepth, 1);
         QCOMPARE(spec.arrayCount, 0);
     }
 
@@ -505,6 +507,7 @@ private slots:
         TypeSpec spec = parseTypeSpec("Ball**");
         QCOMPARE(spec.baseName, QString("Ball"));
         QVERIFY(spec.isPointer);
+        QCOMPARE(spec.ptrDepth, 2);
     }
 
     void testParseTypeSpecEmpty() {
@@ -959,6 +962,508 @@ private slots:
 
         // Restore
         tm.setCurrent(origIdx);
+    }
+
+    // ── parseTypeSpec: primitive pointer ptrDepth ──
+
+    void testParseTypeSpecPrimitiveStar() {
+        TypeSpec spec = parseTypeSpec("int32_t*");
+        QCOMPARE(spec.baseName, QString("int32_t"));
+        QVERIFY(spec.isPointer);
+        QCOMPARE(spec.ptrDepth, 1);
+        QCOMPARE(spec.arrayCount, 0);
+    }
+
+    void testParseTypeSpecPrimitiveDoubleStar() {
+        TypeSpec spec = parseTypeSpec("f64**");
+        QCOMPARE(spec.baseName, QString("f64"));
+        QVERIFY(spec.isPointer);
+        QCOMPARE(spec.ptrDepth, 2);
+        QCOMPARE(spec.arrayCount, 0);
+    }
+
+    // ── Primitive pointer creation via applyTypePopupResult path ──
+
+    void testPrimitivePointerCreation() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        // Find the "x" field (Int32) inside Alpha
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        QCOMPARE(doc->tree.nodes[xIdx].kind, NodeKind::Int32);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        // Simulate the primitive-pointer path: Int32 → Pointer64 + elementKind=Int32 + ptrDepth=1
+        doc->undoStack.beginMacro(QStringLiteral("Change to primitive pointer"));
+        ctrl->changeNodeKind(xIdx, NodeKind::Pointer64);
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        doc->tree.nodes[idx].elementKind = NodeKind::Int32;
+        doc->tree.nodes[idx].ptrDepth = 1;
+        doc->undoStack.endMacro();
+        QApplication::processEvents();
+
+        // Verify: Pointer64 with elementKind=Int32, ptrDepth=1, refId=0
+        idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].elementKind, NodeKind::Int32);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 1);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        // Undo reverses the macro
+        doc->undoStack.undo();
+        QApplication::processEvents();
+        idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Int32);
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    void testDoublePointerCreation() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        // Find the "x" field (Int32) inside Alpha
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        // Simulate: Int32 → Pointer64 + elementKind=Double + ptrDepth=2
+        doc->undoStack.beginMacro(QStringLiteral("Change to double pointer"));
+        ctrl->changeNodeKind(xIdx, NodeKind::Pointer64);
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        doc->tree.nodes[idx].elementKind = NodeKind::Double;
+        doc->tree.nodes[idx].ptrDepth = 2;
+        doc->undoStack.endMacro();
+        QApplication::processEvents();
+
+        // Verify: Pointer64 with elementKind=Double, ptrDepth=2
+        idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].elementKind, NodeKind::Double);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 2);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    // ── ptrDepth JSON round-trip ──
+
+    void testPtrDepthJsonRoundTrip() {
+        Node n;
+        n.kind = NodeKind::Pointer64;
+        n.name = "pData";
+        n.elementKind = NodeKind::Float;
+        n.ptrDepth = 2;
+        n.id = 42;
+
+        QJsonObject obj = n.toJson();
+        QCOMPARE(obj["ptrDepth"].toInt(), 2);
+
+        Node restored = Node::fromJson(obj);
+        QCOMPARE(restored.ptrDepth, 2);
+        QCOMPARE(restored.elementKind, NodeKind::Float);
+        QCOMPARE(restored.kind, NodeKind::Pointer64);
+    }
+
+    void testPtrDepthJsonDefault() {
+        // Nodes without ptrDepth in JSON should default to 0
+        Node n;
+        n.kind = NodeKind::Pointer64;
+        n.name = "pVoid";
+        n.id = 99;
+
+        QJsonObject obj = n.toJson();
+        // ptrDepth==0 is not serialized
+        QVERIFY(!obj.contains("ptrDepth"));
+
+        Node restored = Node::fromJson(obj);
+        QCOMPARE(restored.ptrDepth, 0);
+    }
+
+    // ── setMode always resets modifier buttons ──
+
+    void testSetModeResetsModifierInPointerTargetMode() {
+        TypeSelectorPopup popup;
+
+        // Set FieldType mode and select * modifier
+        popup.setMode(TypePopupMode::FieldType);
+        popup.setModifier(1);  // select *
+
+        // Now switch to PointerTarget mode — should reset to plain
+        popup.setMode(TypePopupMode::PointerTarget);
+
+        // Verify: modifier buttons are hidden but internally reset to plain (modId=0)
+        // This means primitives will be visible in applyFilter
+        TypeEntry prim;
+        prim.entryKind = TypeEntry::Primitive;
+        prim.primitiveKind = NodeKind::Int32;
+        prim.displayName = "int32_t";
+
+        TypeEntry voidEntry;
+        voidEntry.entryKind = TypeEntry::Primitive;
+        voidEntry.primitiveKind = NodeKind::Pointer64;
+        voidEntry.displayName = "void";
+
+        popup.setTypes({prim, voidEntry});
+
+        // Both primitives should be visible (not filtered out)
+        auto* listView = popup.findChild<QListView*>();
+        QVERIFY(listView);
+        int rowCount = listView->model()->rowCount();
+        // Should have section header + 2 primitives = at least 3 rows
+        QVERIFY2(rowCount >= 3,
+                 qPrintable(QString("Expected >=3 rows (header+2 prims), got %1").arg(rowCount)));
+    }
+
+    // ── setModifier preselection ──
+
+    void testSetModifierPreselects() {
+        TypeSelectorPopup popup;
+
+        // Test * preselection
+        popup.setMode(TypePopupMode::FieldType);
+        popup.setModifier(1);
+        auto* btnGroup = popup.findChild<QButtonGroup*>();
+        QVERIFY(btnGroup);
+        QCOMPARE(btnGroup->checkedId(), 1);
+
+        // Test ** preselection
+        popup.setMode(TypePopupMode::FieldType);
+        popup.setModifier(2);
+        QCOMPARE(btnGroup->checkedId(), 2);
+
+        // Test [n] preselection with count
+        popup.setMode(TypePopupMode::FieldType);
+        popup.setModifier(3, 8);
+        QCOMPARE(btnGroup->checkedId(), 3);
+        auto* countEdit = popup.findChild<QLineEdit*>(QStringLiteral("arrayCountEdit"));
+        // Array count edit may not have objectName set; find via parent
+        // Just verify button group is correct
+    }
+
+    // ── isValidPrimitivePtrTarget ──
+
+    void testIsValidPrimitivePtrTarget() {
+        // Hex types → NOT valid (deref shows same hex as void*)
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Hex8));
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Hex16));
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Hex32));
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Hex64));
+
+        // Pointer types → NOT valid (use composite * for chains)
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Pointer32));
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Pointer64));
+
+        // Function pointers → NOT valid
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::FuncPtr32));
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::FuncPtr64));
+
+        // Containers → NOT valid
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Struct));
+        QVERIFY(!isValidPrimitivePtrTarget(NodeKind::Array));
+
+        // Value types → valid
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::Int32));
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::UInt64));
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::Float));
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::Double));
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::Bool));
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::Vec3));
+        QVERIFY(isValidPrimitivePtrTarget(NodeKind::UTF8));
+    }
+
+    // ── hex64* falls back to void* ──
+
+    void testHex64StarFallsBackToVoidPointer() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        // Find the "x" field (Int32)
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        // Build a TypeEntry for hex64
+        TypeEntry hexEntry;
+        hexEntry.entryKind = TypeEntry::Primitive;
+        hexEntry.primitiveKind = NodeKind::Hex64;
+        hexEntry.displayName = "hex64";
+
+        // Apply it with pointer modifier (fullText = "hex64*")
+        ctrl->applyTypePopupResult(TypePopupMode::FieldType, xIdx,
+                                   hexEntry, QStringLiteral("hex64*"));
+        QApplication::processEvents();
+
+        // Should be a void pointer: Pointer64, ptrDepth=0, refId=0
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 0);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    void testHex8StarFallsBackToVoidPointer() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        TypeEntry hexEntry;
+        hexEntry.entryKind = TypeEntry::Primitive;
+        hexEntry.primitiveKind = NodeKind::Hex8;
+        hexEntry.displayName = "hex8";
+
+        ctrl->applyTypePopupResult(TypePopupMode::FieldType, xIdx,
+                                   hexEntry, QStringLiteral("hex8*"));
+        QApplication::processEvents();
+
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 0);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    void testPtr64StarFallsBackToVoidPointer() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        TypeEntry ptrEntry;
+        ptrEntry.entryKind = TypeEntry::Primitive;
+        ptrEntry.primitiveKind = NodeKind::Pointer64;
+        ptrEntry.displayName = "ptr64";
+
+        ctrl->applyTypePopupResult(TypePopupMode::FieldType, xIdx,
+                                   ptrEntry, QStringLiteral("ptr64*"));
+        QApplication::processEvents();
+
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 0);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    // ── Valid primitive pointers still work ──
+
+    void testInt32StarStillCreatesPrimitivePointer() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        TypeEntry intEntry;
+        intEntry.entryKind = TypeEntry::Primitive;
+        intEntry.primitiveKind = NodeKind::Int32;
+        intEntry.displayName = "int32_t";
+
+        ctrl->applyTypePopupResult(TypePopupMode::FieldType, xIdx,
+                                   intEntry, QStringLiteral("int32_t*"));
+        QApplication::processEvents();
+
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 1);
+        QCOMPARE(doc->tree.nodes[idx].elementKind, NodeKind::Int32);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    void testDoubleDoubleStarStillCreatesPrimitivePointer() {
+        auto* doc = new RcxDocument();
+        buildTwoRootTree(doc->tree);
+        doc->provider = std::make_unique<BufferProvider>(makeBuffer());
+
+        auto* splitter = new QSplitter();
+        auto* ctrl = new RcxController(doc, nullptr);
+        ctrl->addSplitEditor(splitter);
+
+        splitter->resize(800, 600);
+        splitter->show();
+        QVERIFY(QTest::qWaitForWindowExposed(splitter));
+        ctrl->refresh();
+        QApplication::processEvents();
+
+        int xIdx = -1;
+        for (int i = 0; i < doc->tree.nodes.size(); i++) {
+            if (doc->tree.nodes[i].name == "x") { xIdx = i; break; }
+        }
+        QVERIFY(xIdx >= 0);
+        uint64_t xNodeId = doc->tree.nodes[xIdx].id;
+
+        TypeEntry dblEntry;
+        dblEntry.entryKind = TypeEntry::Primitive;
+        dblEntry.primitiveKind = NodeKind::Double;
+        dblEntry.displayName = "double";
+
+        ctrl->applyTypePopupResult(TypePopupMode::FieldType, xIdx,
+                                   dblEntry, QStringLiteral("double**"));
+        QApplication::processEvents();
+
+        int idx = doc->tree.indexOfId(xNodeId);
+        QVERIFY(idx >= 0);
+        QCOMPARE(doc->tree.nodes[idx].kind, NodeKind::Pointer64);
+        QCOMPARE(doc->tree.nodes[idx].ptrDepth, 2);
+        QCOMPARE(doc->tree.nodes[idx].elementKind, NodeKind::Double);
+        QCOMPARE(doc->tree.nodes[idx].refId, uint64_t(0));
+
+        delete ctrl;
+        delete splitter;
+        delete doc;
+    }
+
+    // ── Defense: compose/format treat invalid ptrDepth as void* ──
+
+    void testComposeShowsVoidPtrForHexPtrDepth() {
+        // If a node somehow has ptrDepth>0 with hex elementKind
+        // (e.g. from old JSON), compose should show "void*" not "hex64*"
+        NodeTree tree;
+        tree.baseAddress = 0x1000;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Test";
+        root.structTypeName = "Test";
+        root.parentId = 0;
+        tree.addNode(root);
+        uint64_t rootId = tree.nodes[0].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "badPtr";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.ptrDepth = 1;
+        ptr.elementKind = NodeKind::Hex64;  // invalid target
+        tree.addNode(ptr);
+
+        QByteArray buf(0x100, '\0');
+        BufferProvider prov(buf);
+
+        ComposeResult result = compose(tree, prov);
+
+        // The composed text should NOT contain "hex64*" — the invalid target
+        // should fall through to normal void pointer display
+        QVERIFY2(!result.text.contains("hex64*"),
+                 qPrintable("Should not show 'hex64*', got: " + result.text));
     }
 };
 

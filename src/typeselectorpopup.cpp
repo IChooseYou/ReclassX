@@ -32,7 +32,8 @@ TypeSpec parseTypeSpec(const QString& text) {
     if (s.endsWith('*')) {
         spec.isPointer = true;
         s.chop(1);
-        if (s.endsWith('*')) s.chop(1);  // double pointer
+        spec.ptrDepth = 1;
+        if (s.endsWith('*')) { s.chop(1); spec.ptrDepth = 2; }
         spec.baseName = s.trimmed();
         return spec;
     }
@@ -347,7 +348,6 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
                 m_arrayCountEdit->selectAll();
             }
             updateModifierPreview();
-            applyFilter(m_filterEdit->text());
         });
         connect(m_arrayCountEdit, &QLineEdit::textChanged,
                 this, [this]() { updateModifierPreview(); });
@@ -516,20 +516,30 @@ void TypeSelectorPopup::setTitle(const QString& title) {
 
 void TypeSelectorPopup::setMode(TypePopupMode mode) {
     m_mode = mode;
-    // Show modifier toggles for modes where type modifiers make sense
     bool showMods = (mode == TypePopupMode::FieldType
                      || mode == TypePopupMode::ArrayElement);
     m_modRow->setVisible(showMods);
-    // Reset to plain when showing
-    if (showMods) {
-        m_btnPlain->setChecked(true);
-        m_arrayCountEdit->clear();
-        m_arrayCountEdit->hide();
-    }
+    // Always reset to plain — prevents stale state from leaking across modes
+    // (PointerTarget hides buttons but applyFilter still reads their state)
+    m_btnPlain->setChecked(true);
+    m_arrayCountEdit->clear();
+    m_arrayCountEdit->hide();
 }
 
 void TypeSelectorPopup::setCurrentNodeSize(int bytes) {
     m_currentNodeSize = bytes;
+}
+
+void TypeSelectorPopup::setModifier(int modId, int arrayCount) {
+    if (modId == 1)      m_btnPtr->setChecked(true);
+    else if (modId == 2) m_btnDblPtr->setChecked(true);
+    else if (modId == 3) {
+        m_btnArray->setChecked(true);
+        m_arrayCountEdit->setText(QString::number(arrayCount));
+        m_arrayCountEdit->show();
+    } else {
+        m_btnPlain->setChecked(true);
+    }
 }
 
 void TypeSelectorPopup::setTypes(const QVector<TypeEntry>& types, const TypeEntry* current) {
@@ -541,10 +551,8 @@ void TypeSelectorPopup::setTypes(const QVector<TypeEntry>& types, const TypeEntr
         m_currentEntry = TypeEntry{};
         m_hasCurrent = false;
     }
-    // Reset modifier toggles
-    m_btnPlain->setChecked(true);
-    m_arrayCountEdit->clear();
-    m_arrayCountEdit->hide();
+    // Don't reset modifier buttons here — setMode() already resets to plain,
+    // and setModifier() may have preselected a button between setMode/setTypes.
     m_previewLabel->hide();
 
     m_filterEdit->clear();
@@ -630,23 +638,18 @@ void TypeSelectorPopup::applyFilter(const QString& text) {
 
     QString filterBase = text.trimmed();
 
-    // Hide primitives when a pointer modifier (* or **) is active
-    int modId = m_modGroup->checkedId();
-    bool hideprimitives = (modId == 1 || modId == 2);
-
-    // Separate primitives and composites
+    // Separate primitives and composites (all types shown regardless of modifier)
     QVector<TypeEntry> primitives, composites;
     for (const auto& t : m_allTypes) {
-        if (t.entryKind == TypeEntry::Section) continue;  // skip stale sections
+        if (t.entryKind == TypeEntry::Section) continue;
         bool matchesFilter = filterBase.isEmpty()
             || t.displayName.contains(filterBase, Qt::CaseInsensitive)
             || t.classKeyword.contains(filterBase, Qt::CaseInsensitive);
         if (!matchesFilter) continue;
 
-        if (t.entryKind == TypeEntry::Primitive) {
-            if (!hideprimitives)
-                primitives.append(t);
-        } else if (t.entryKind == TypeEntry::Composite)
+        if (t.entryKind == TypeEntry::Primitive)
+            primitives.append(t);
+        else if (t.entryKind == TypeEntry::Composite)
             composites.append(t);
     }
 

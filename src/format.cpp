@@ -267,6 +267,30 @@ static QString readValueImpl(const Node& node, const Provider& prov,
     }
     case NodeKind::Pointer64: {
         uint64_t val = prov.readU64(addr);
+        // Primitive pointer: dereference and show target value
+        // (hex/ptr/fnptr targets fall through to plain void* display)
+        if (node.ptrDepth > 0 && isValidPrimitivePtrTarget(node.elementKind) && val != 0) {
+            uint64_t target = val;
+            for (int d = 1; d < node.ptrDepth && target != 0; d++)
+                target = prov.isReadable(target, 8) ? prov.readU64(target) : 0;
+            if (target != 0 && prov.isReadable(target, sizeForKind(node.elementKind))) {
+                // Create a temporary node of the target kind to format the value
+                Node tmp;
+                tmp.kind = node.elementKind;
+                tmp.strLen = node.strLen;
+                QString derefVal = readValueImpl(tmp, prov, target, 0, mode);
+                if (display) {
+                    QString arrow = QStringLiteral("-> ");
+                    QString sym = prov.getSymbol(val);
+                    if (!sym.isEmpty())
+                        return arrow + derefVal + QStringLiteral("  // ") + sym;
+                    return arrow + derefVal;
+                }
+                return derefVal;
+            }
+            if (!display) return rawHex(val, 16);
+            return fmtPointer64(val);
+        }
         if (!display) return rawHex(val, 16);
         QString s = fmtPointer64(val);
         QString sym = prov.getSymbol(val);

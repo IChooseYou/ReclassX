@@ -223,8 +223,17 @@ void RcxController::connectEditor(RcxEditor* editor) {
         TypePopupMode mode = TypePopupMode::FieldType;
         if (target == EditTarget::ArrayElementType)
             mode = TypePopupMode::ArrayElement;
-        else if (target == EditTarget::PointerTarget)
-            mode = TypePopupMode::PointerTarget;
+        else if (target == EditTarget::PointerTarget) {
+            // Primitive pointers (ptrDepth>0) should open FieldType with
+            // the base type selected and *//** preselected — not PointerTarget.
+            bool isPrimPtr = false;
+            if (nodeIdx >= 0 && nodeIdx < m_doc->tree.nodes.size()) {
+                const auto& n = m_doc->tree.nodes[nodeIdx];
+                isPrimPtr = n.ptrDepth > 0 && n.refId == 0;
+            }
+            mode = isPrimPtr ? TypePopupMode::FieldType
+                             : TypePopupMode::PointerTarget;
+        }
         showTypePopup(editor, mode, nodeIdx, globalPos);
     });
 
@@ -1855,6 +1864,8 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
     QVector<TypeEntry> entries;
     TypeEntry currentEntry;
     bool hasCurrent = false;
+    int preModId = 0;        // modifier to preselect: 0=plain, 1=*, 2=**, 3=[n]
+    int preArrayCount = 0;   // array count when preModId==3
 
     auto addPrimitives = [&](bool enabled, bool excludeStructArrayPad) {
         for (const auto& m : kKindMeta) {
@@ -1894,10 +1905,43 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
         });
         break;
 
-    case TypePopupMode::FieldType:
+    case TypePopupMode::FieldType: {
         addPrimitives(/*enabled=*/true, /*excludeStructArrayPad=*/false);
-        if (node) {
-            // Mark current primitive
+        bool isPtr = node
+            && (node->kind == NodeKind::Pointer32 || node->kind == NodeKind::Pointer64);
+        bool isTypedPtr = isPtr && node->refId != 0;
+        bool isPrimPtr  = isPtr && node->ptrDepth > 0 && node->refId == 0;
+        bool isArray = node && node->kind == NodeKind::Array;
+
+        if (isPrimPtr) {
+            // Primitive pointer (e.g. int32* or f64**) — current = element kind, modifier = *//**
+            preModId = (node->ptrDepth >= 2) ? 2 : 1;
+            for (auto& e : entries) {
+                if (e.entryKind == TypeEntry::Primitive && e.primitiveKind == node->elementKind) {
+                    currentEntry = e;
+                    hasCurrent = true;
+                    break;
+                }
+            }
+        } else if (isTypedPtr) {
+            // Typed pointer (e.g. Ball*) — current = composite target, modifier = *
+            preModId = 1;
+        } else if (isArray) {
+            // Array — modifier = [n]
+            preModId = 3;
+            preArrayCount = node->arrayLen;
+            if (node->elementKind != NodeKind::Struct) {
+                // Primitive array — mark element kind as current
+                for (auto& e : entries) {
+                    if (e.entryKind == TypeEntry::Primitive && e.primitiveKind == node->elementKind) {
+                        currentEntry = e;
+                        hasCurrent = true;
+                        break;
+                    }
+                }
+            }
+        } else if (node) {
+            // Plain primitive — mark current
             for (auto& e : entries) {
                 if (e.entryKind == TypeEntry::Primitive && e.primitiveKind == node->kind) {
                     currentEntry = e;
@@ -1906,8 +1950,14 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
                 }
             }
         }
-        addComposites([](const Node&, const TypeEntry&) { return false; });
+        // For isTypedPtr or struct-array: current is a Composite, set by addComposites below
+        addComposites([&](const Node& n, const TypeEntry& e) {
+            if (isTypedPtr && n.refId == e.structId) return true;
+            if (isArray && n.elementKind == NodeKind::Struct && n.refId == e.structId) return true;
+            return false;
+        });
         break;
+    }
 
     case TypePopupMode::ArrayElement:
         addPrimitives(/*enabled=*/true, /*excludeStructArrayPad=*/true);
@@ -1993,6 +2043,10 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
     auto* popup = ensurePopup(editor);
     popup->setFont(font);
     popup->setMode(mode);
+
+    // Preselect modifier button to reflect current node state (after setMode resets to plain)
+    if (preModId > 0)
+        popup->setModifier(preModId, preArrayCount);
 
     // Pass current node size for same-size sorting
     int nodeSize = 0;
@@ -2107,6 +2161,44 @@ void RcxController::applyTypePopupResult(TypePopupMode mode, int nodeIdx,
                 m_doc->undoStack.endMacro();
                 m_suppressRefresh = wasSuppressed;
                 if (!m_suppressRefresh) refresh();
+            } else if (spec.isPointer) {
+                if (!isValidPrimitivePtrTarget(resolved.primitiveKind)) {
+                    // Hex, pointer, fnptr types with * → plain void pointer
+                    if (nodeKind != NodeKind::Pointer64)
+                        changeNodeKind(nodeIdx, NodeKind::Pointer64);
+                    int idx = m_doc->tree.indexOfId(nodeId);
+                    if (idx >= 0) {
+                        auto& n = m_doc->tree.nodes[idx];
+                        n.ptrDepth = 0;
+                        if (n.refId != 0)
+                            m_doc->undoStack.push(new RcxCommand(this,
+                                cmd::ChangePointerRef{nodeId, n.refId, 0}));
+                    }
+                } else {
+                    // Primitive pointer: e.g. "int32*" or "f64**" → Pointer64 + elementKind + ptrDepth
+                    bool wasSuppressed = m_suppressRefresh;
+                    m_suppressRefresh = true;
+                    m_doc->undoStack.beginMacro(QStringLiteral("Change to primitive pointer"));
+                    if (nodeKind != NodeKind::Pointer64)
+                        changeNodeKind(nodeIdx, NodeKind::Pointer64);
+                    int idx = m_doc->tree.indexOfId(nodeId);
+                    if (idx >= 0) {
+                        auto& n = m_doc->tree.nodes[idx];
+                        if (n.elementKind != resolved.primitiveKind || n.ptrDepth != spec.ptrDepth) {
+                            NodeKind oldEK = n.elementKind;
+                            int oldDepth = n.ptrDepth;
+                            n.elementKind = resolved.primitiveKind;
+                            n.ptrDepth = spec.ptrDepth;
+                            if (n.refId != 0)
+                                m_doc->undoStack.push(new RcxCommand(this,
+                                    cmd::ChangePointerRef{nodeId, n.refId, 0}));
+                            Q_UNUSED(oldEK); Q_UNUSED(oldDepth);
+                        }
+                    }
+                    m_doc->undoStack.endMacro();
+                    m_suppressRefresh = wasSuppressed;
+                    if (!m_suppressRefresh) refresh();
+                }
             } else {
                 if (resolved.primitiveKind != nodeKind)
                     changeNodeKind(nodeIdx, resolved.primitiveKind);

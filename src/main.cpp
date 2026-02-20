@@ -410,7 +410,7 @@ void MainWindow::createMenus() {
     Qt5Qt6AddAction(file, "&Save", QKeySequence::Save, makeIcon(":/vsicons/save.svg"), this, &MainWindow::saveFile);
     Qt5Qt6AddAction(file, "Save &As...", QKeySequence::SaveAs, makeIcon(":/vsicons/save-as.svg"), this, &MainWindow::saveFileAs);
     file->addSeparator();
-    m_sourceMenu = file->addMenu("So&urce");
+    m_sourceMenu = file->addMenu("Current Tab So&urce");
     connect(m_sourceMenu, &QMenu::aboutToShow, this, &MainWindow::populateSourceMenu);
     file->addSeparator();
     Qt5Qt6AddAction(file, "&Unload Project", QKeySequence(Qt::CTRL | Qt::Key_W), QIcon(), this, &MainWindow::closeFile);
@@ -499,14 +499,26 @@ void MainWindow::createMenus() {
 }
 
 // ── Themed resize grip (replaces ugly default QSizeGrip) ──
+// Positioned as a direct child of MainWindow at the bottom-right corner,
+// NOT inside the status bar layout (which is font-height dependent).
 class ResizeGrip : public QWidget {
 public:
+    static constexpr int kSize = 16;    // widget size
+    static constexpr int kPad  = 4;     // padding from window corner (identical right & bottom)
+
     explicit ResizeGrip(QWidget* parent) : QWidget(parent) {
-        setFixedSize(16, 16);
+        setFixedSize(kSize, kSize);
         setCursor(Qt::SizeFDiagCursor);
         m_color = rcx::ThemeManager::instance().current().textFaint;
     }
     void setGripColor(const QColor& c) { m_color = c; update(); }
+
+    // Call from parent's resizeEvent to pin to bottom-right corner
+    void reposition() {
+        QWidget* w = parentWidget();
+        if (w) move(w->width() - kSize - kPad, w->height() - kSize - kPad);
+    }
+
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
@@ -514,8 +526,11 @@ protected:
         p.setPen(Qt::NoPen);
         p.setBrush(m_color);
         // 6 dots in a triangle pointing bottom-right (VS2022 style)
+        // Dot grid is centered within the widget: same inset from right and bottom
         const double r = 1.0, s = 4.0;
-        double bx = width() - 5, by = height() - 4;
+        const double inset = 4.0;
+        double bx = width()  - inset;
+        double by = height() - inset;
         // bottom row: 3 dots
         p.drawEllipse(QPointF(bx,         by), r, r);
         p.drawEllipse(QPointF(bx - s,     by), r, r);
@@ -539,13 +554,15 @@ private:
 void MainWindow::createStatusBar() {
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setContentsMargins(10, 0, 0, 0);
-    statusBar()->setContentsMargins(0, 4, 0, 0);
+    statusBar()->setContentsMargins(0, 0, 0, 0);
     statusBar()->setSizeGripEnabled(false);  // disable ugly default grip
     statusBar()->addWidget(m_statusLabel, 1);
 
+    // Grip is a direct child of the main window, NOT in the status bar layout.
+    // Positioned via reposition() in resizeEvent — immune to font/margin changes.
     auto* grip = new ResizeGrip(this);
     grip->setObjectName("resizeGrip");
-    statusBar()->addPermanentWidget(grip);
+    grip->raise();
 
     {
         const auto& t = ThemeManager::instance().current();
@@ -1116,15 +1133,16 @@ void MainWindow::applyTheme(const Theme& theme) {
     // Re-style ✕ close buttons on MDI tabs
     styleTabCloseButtons();
 
-    // Status bar + resize grip
+    // Status bar
     {
         QPalette sbPal = statusBar()->palette();
         sbPal.setColor(QPalette::Window, theme.background);
         sbPal.setColor(QPalette::WindowText, theme.textDim);
         statusBar()->setPalette(sbPal);
-        auto* grip = statusBar()->findChild<ResizeGrip*>("resizeGrip");
-        if (grip) grip->setGripColor(theme.textFaint);
     }
+    // Resize grip (direct child of main window, not in status bar)
+    if (auto* grip = findChild<ResizeGrip*>("resizeGrip"))
+        grip->setGripColor(theme.textFaint);
 
     // Workspace tree: text color matches menu bar
     if (m_workspaceTree) {
@@ -2059,6 +2077,11 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     if (m_borderOverlay) {
         m_borderOverlay->setGeometry(rect());
         m_borderOverlay->raise();
+    }
+    auto* grip = findChild<ResizeGrip*>("resizeGrip");
+    if (grip) {
+        grip->reposition();
+        grip->raise();
     }
 }
 

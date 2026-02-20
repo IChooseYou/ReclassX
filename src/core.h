@@ -142,6 +142,15 @@ inline constexpr bool isMatrixKind(NodeKind k) {
 inline constexpr bool isFuncPtr(NodeKind k) {
     return k == NodeKind::FuncPtr32 || k == NodeKind::FuncPtr64;
 }
+// Hex types, pointer types, function pointers, and containers are not meaningful
+// primitive-pointer targets — dereferencing them produces the same output as void*.
+inline constexpr bool isValidPrimitivePtrTarget(NodeKind k) {
+    if (isHexNode(k)) return false;
+    if (k == NodeKind::Pointer32 || k == NodeKind::Pointer64) return false;
+    if (isFuncPtr(k)) return false;
+    if (k == NodeKind::Struct || k == NodeKind::Array) return false;
+    return true;
+}
 
 inline QStringList allTypeNamesForUI(bool stripBrackets = false) {
     QStringList out;
@@ -184,7 +193,8 @@ struct Node {
     int      strLen     = 64;
     bool     collapsed  = false;
     uint64_t refId      = 0;       // Pointer32/64: id of Struct to expand at *ptr
-    NodeKind elementKind = NodeKind::UInt8;  // Array: element type
+    NodeKind elementKind = NodeKind::UInt8;  // Array: element type; Pointer with ptrDepth>0: target type
+    int      ptrDepth   = 0;   // Pointer: 0=struct/void ptr, 1=primitive*, 2=primitive**
     int      viewIndex  = 0;   // Array: current view offset (transient)
 
     // Note: Returns 0 for Array-of-Struct/Array. Use tree.structSpan() for accurate size.
@@ -217,6 +227,8 @@ struct Node {
         o["collapsed"] = collapsed;
         o["refId"]     = QString::number(refId);
         o["elementKind"] = kindToString(elementKind);
+        if (ptrDepth > 0)
+            o["ptrDepth"] = ptrDepth;
         return o;
     }
     static Node fromJson(const QJsonObject& o) {
@@ -233,6 +245,7 @@ struct Node {
         n.collapsed = o["collapsed"].toBool(false);
         n.refId     = o["refId"].toString("0").toULongLong();
         n.elementKind = kindFromString(o["elementKind"].toString("UInt8"));
+        n.ptrDepth  = qBound(0, o["ptrDepth"].toInt(0), 2);
         return n;
     }
 

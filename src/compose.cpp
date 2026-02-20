@@ -119,8 +119,17 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
     QString ptrTypeOverride;
     QString ptrTargetName;
     if (node.kind == NodeKind::Pointer32 || node.kind == NodeKind::Pointer64) {
-        ptrTargetName = resolvePointerTarget(tree, node.refId);
-        ptrTypeOverride = fmt::pointerTypeName(node.kind, ptrTargetName);
+        if (node.ptrDepth > 0 && isValidPrimitivePtrTarget(node.elementKind)) {
+            // Primitive pointer: e.g. "int32*" or "f64**"
+            const auto* meta = kindMeta(node.elementKind);
+            QString baseName = meta ? QString::fromLatin1(meta->typeName)
+                                    : QStringLiteral("void");
+            QString stars = (node.ptrDepth >= 2) ? QStringLiteral("**") : QStringLiteral("*");
+            ptrTypeOverride = baseName + stars;
+        } else {
+            ptrTargetName = resolvePointerTarget(tree, node.refId);
+            ptrTypeOverride = fmt::pointerTypeName(node.kind, ptrTargetName);
+        }
     }
 
     for (int sub = 0; sub < numLines; sub++) {

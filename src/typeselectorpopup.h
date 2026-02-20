@@ -40,6 +40,7 @@ struct TypeEntry {
 struct TypeSpec {
     QString baseName;
     bool    isPointer  = false;
+    int     ptrDepth   = 0;       // 1 = *, 2 = ** (only meaningful when isPointer)
     int     arrayCount = 0;       // 0 = not array
 };
 
@@ -57,6 +58,7 @@ public:
     void setMode(TypePopupMode mode);
     void applyTheme(const Theme& theme);
     void setCurrentNodeSize(int bytes);
+    void setModifier(int modId, int arrayCount = 0);
     void setTypes(const QVector<TypeEntry>& types, const TypeEntry* current = nullptr);
     void popup(const QPoint& globalPos);
 
