@@ -25,34 +25,24 @@ jobs:
           arch: 'win64_mingw'
           cache: true
           aqtversion: '==3.1.21'
-          tools: 'tools_mingw1310'
 
       - name: Configure
         shell: bash
         run: |
-          # Find the MinGW bin directory installed by aqt
-          MINGW_BIN=$(find "$RUNNER_WORKSPACE" -path "*/mingw*/bin" -name "*.exe" -printf '%h\n' 2>/dev/null | head -1)
-          if [ -z "$MINGW_BIN" ]; then
-            MINGW_BIN=$(find "$IQTA_TOOLS" -path "*/mingw*/bin" -name "g++.exe" -printf '%h\n' 2>/dev/null | head -1)
-          fi
-          echo "MinGW bin: $MINGW_BIN"
-          export PATH="$MINGW_BIN:$PATH"
+          export PATH="/c/mingw64/bin:$PATH"
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_UI_TESTS=OFF \
-            -DCMAKE_C_COMPILER="$MINGW_BIN/gcc.exe" \
-            -DCMAKE_CXX_COMPILER="$MINGW_BIN/g++.exe"
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 
       - name: Build
         shell: bash
         run: |
-          MINGW_BIN=$(find "$IQTA_TOOLS" -path "*/mingw*/bin" -name "g++.exe" -printf '%h\n' 2>/dev/null | head -1)
-          export PATH="$MINGW_BIN:$PATH"
+          export PATH="/c/mingw64/bin:$PATH"
           cmake --build build
 
       - name: Test
         shell: bash
         run: |
-          MINGW_BIN=$(find "$IQTA_TOOLS" -path "*/mingw*/bin" -name "g++.exe" -printf '%h\n' 2>/dev/null | head -1)
-          export PATH="$MINGW_BIN:$PATH"
+          export PATH="/c/mingw64/bin:$PATH"
           ctest --test-dir build --output-on-failure
 
       - name: Upload artifact
