@@ -267,6 +267,7 @@ struct Node {
 struct NodeTree {
     QVector<Node> nodes;
     uint64_t      baseAddress = 0x00400000;
+    QString       baseAddressFormula;  // e.g. "<ReClass.exe> + 0x100"
     uint64_t      m_nextId    = 1;
     mutable QHash<uint64_t, int> m_idCache;
 
@@ -400,6 +401,8 @@ struct NodeTree {
     QJsonObject toJson() const {
         QJsonObject o;
         o["baseAddress"] = QString::number(baseAddress, 16);
+        if (!baseAddressFormula.isEmpty())
+            o["baseAddressFormula"] = baseAddressFormula;
         o["nextId"]      = QString::number(m_nextId);
         QJsonArray arr;
         for (const auto& n : nodes) arr.append(n.toJson());
@@ -410,6 +413,7 @@ struct NodeTree {
     static NodeTree fromJson(const QJsonObject& o) {
         NodeTree t;
         t.baseAddress = o["baseAddress"].toString("400000").toULongLong(nullptr, 16);
+        t.baseAddressFormula = o["baseAddressFormula"].toString();
         t.m_nextId    = o["nextId"].toString("1").toULongLong();
         QJsonArray arr = o["nodes"].toArray();
         for (const auto& v : arr) {
@@ -541,7 +545,7 @@ namespace cmd {
     struct Insert      { Node node; QVector<OffsetAdj> offAdjs; };
     struct Remove      { uint64_t nodeId; QVector<Node> subtree;
                          QVector<OffsetAdj> offAdjs; };
-    struct ChangeBase  { uint64_t oldBase, newBase; };
+    struct ChangeBase  { uint64_t oldBase, newBase; QString oldFormula, newFormula; };
     struct WriteBytes  { uint64_t addr; QByteArray oldBytes, newBytes; };
     struct ChangeArrayMeta { uint64_t nodeId;
                              NodeKind oldElementKind, newElementKind;
@@ -663,8 +667,11 @@ inline ColumnSpan commandRowAddrSpan(const QString& lineText) {
     int tag = lineText.indexOf(QStringLiteral(" \u00B7"));
     if (tag < 0) return {};
     int start = tag + 3;  // after " · "
-    int end = start;
-    while (end < lineText.size() && !lineText[end].isSpace()) end++;
+    // Scan to next " · " separator (or end of line) to support formulas with spaces
+    int nextSep = lineText.indexOf(QStringLiteral(" \u00B7"), start);
+    int end = (nextSep >= 0) ? nextSep : lineText.size();
+    // Trim trailing whitespace
+    while (end > start && lineText[end - 1].isSpace()) end--;
     if (end <= start) return {};
     return {start, end, true};
 }

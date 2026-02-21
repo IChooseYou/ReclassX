@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "addressparser.h"
 #include "typeselectorpopup.h"
 #include "providerregistry.h"
 #include "themes/thememanager.h"
@@ -328,53 +329,29 @@ void RcxController::connectEditor(RcxEditor* editor) {
             s.remove('`');          // WinDbg backtick separators (e.g. 7ff6`6cce0000)
             s.remove('\n');
             s.remove('\r');
-            // Support simple equations: 0x10+0x4, 0x100-0x10, etc.
-            uint64_t newBase = 0;
-            bool ok = true;
-            int pos = 0;
-            bool firstTerm = true;
-            bool adding = true;
 
-            while (pos < s.size() && ok) {
-                // Skip whitespace
-                while (pos < s.size() && s[pos].isSpace()) pos++;
-                if (pos >= s.size()) break;
-
-                // Check for +/- operator (except first term)
-                if (!firstTerm) {
-                    if (s[pos] == '+') { adding = true; pos++; }
-                    else if (s[pos] == '-') { adding = false; pos++; }
-                    else { ok = false; break; }
-                    while (pos < s.size() && s[pos].isSpace()) pos++;
-                }
-
-                // Parse hex number (with or without 0x prefix)
-                int start = pos;
-                bool hasPrefix = (pos + 1 < s.size() &&
-                    s[pos] == '0' && (s[pos+1] == 'x' || s[pos+1] == 'X'));
-                if (hasPrefix) pos += 2;
-
-                int numStart = pos;
-                while (pos < s.size() && (s[pos].isDigit() ||
-                       (s[pos] >= 'a' && s[pos] <= 'f') ||
-                       (s[pos] >= 'A' && s[pos] <= 'F'))) pos++;
-
-                if (pos == numStart) { ok = false; break; }
-
-                QString numStr = s.mid(numStart, pos - numStart);
-                uint64_t val = numStr.toULongLong(&ok, 16);
-                if (!ok) break;
-
-                if (adding) newBase += val;
-                else newBase -= val;
-
-                firstTerm = false;
+            AddressParserCallbacks cbs;
+            if (m_doc->provider) {
+                auto* prov = m_doc->provider.get();
+                cbs.resolveModule = [prov](const QString& name, bool* ok) -> uint64_t {
+                    uint64_t base = prov->symbolToAddress(name);
+                    *ok = (base != 0);
+                    return base;
+                };
+                cbs.readPointer = [prov](uint64_t addr, bool* ok) -> uint64_t {
+                    uint64_t val = 0;
+                    *ok = prov->read(addr, &val, 8);
+                    return val;
+                };
             }
-
-            if (ok && newBase != m_doc->tree.baseAddress) {
+            auto result = AddressParser::evaluate(s, 8, &cbs);
+            if (result.ok && result.value != m_doc->tree.baseAddress) {
                 uint64_t oldBase = m_doc->tree.baseAddress;
+                QString oldFormula = m_doc->tree.baseAddressFormula;
+                // Store formula if input uses module/deref syntax, otherwise clear
+                QString newFormula = (s.contains('<') || s.contains('[')) ? s : QString();
                 m_doc->undoStack.push(new RcxCommand(this,
-                    cmd::ChangeBase{oldBase, newBase}));
+                    cmd::ChangeBase{oldBase, result.value, oldFormula, newFormula}));
             }
             break;
         }
@@ -982,6 +959,7 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             clearHistoryForAdjs(c.offAdjs);
         } else if constexpr (std::is_same_v<T, cmd::ChangeBase>) {
             tree.baseAddress = isUndo ? c.oldBase : c.newBase;
+            tree.baseAddressFormula = isUndo ? c.oldFormula : c.newFormula;
             resetSnapshot();
         } else if constexpr (std::is_same_v<T, cmd::WriteBytes>) {
             const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
@@ -1779,30 +1757,15 @@ void RcxController::updateCommandRow() {
             .arg(provName);
     }
 
-    // -- Symbol for selected node (getSymbol integration) --
-    QString sym;
-    if (m_selIds.size() == 1) {
-        uint64_t sid = *m_selIds.begin();
-        int idx = m_doc->tree.indexOfId(sid & ~kFooterIdBit);
-        if (idx >= 0) {
-            const auto& node = m_doc->tree.nodes[idx];
-            uint64_t addr = m_doc->tree.baseAddress + m_doc->tree.computeOffset(idx);
-            sym = m_doc->provider->getSymbol(addr);
-        }
-    }
+    QString addr;
+    if (!m_doc->tree.baseAddressFormula.isEmpty())
+        addr = m_doc->tree.baseAddressFormula;
+    else
+        addr = QStringLiteral("0x") +
+            QString::number(m_doc->tree.baseAddress, 16).toUpper();
 
-    QString addr = QStringLiteral("0x") +
-        QString::number(m_doc->tree.baseAddress, 16).toUpper();
-
-    // Build the row. If we have a symbol, append it after the address.
-    QString row;
-    if (sym.isEmpty()) {
-        row = QStringLiteral("%1 \u00B7 %2")
-            .arg(elide(src, 40), elide(addr, 24));
-    } else {
-        row = QStringLiteral("%1 \u00B7 %2  %3")
-            .arg(elide(src, 40), elide(addr, 24), elide(sym, 40));
-    }
+    QString row = QStringLiteral("%1 \u00B7 %2")
+        .arg(elide(src, 40), elide(addr, 24));
 
     // Build row 2: root class type + name (uses current view root)
     QString row2;
@@ -2341,6 +2304,26 @@ void RcxController::attachViaPlugin(const QString& providerIdentifier, const QSt
     m_doc->dataPath.clear();
     if (m_doc->tree.baseAddress == 0)
         m_doc->tree.baseAddress = newBase;
+
+    // Re-evaluate stored formula against the new provider
+    if (!m_doc->tree.baseAddressFormula.isEmpty()) {
+        AddressParserCallbacks cbs;
+        auto* prov = m_doc->provider.get();
+        cbs.resolveModule = [prov](const QString& name, bool* ok) -> uint64_t {
+            uint64_t base = prov->symbolToAddress(name);
+            *ok = (base != 0);
+            return base;
+        };
+        cbs.readPointer = [prov](uint64_t addr, bool* ok) -> uint64_t {
+            uint64_t val = 0;
+            *ok = prov->read(addr, &val, 8);
+            return val;
+        };
+        auto result = AddressParser::evaluate(m_doc->tree.baseAddressFormula, 8, &cbs);
+        if (result.ok)
+            m_doc->tree.baseAddress = result.value;
+    }
+
     resetSnapshot();
     emit m_doc->documentChanged();
     refresh();
@@ -2351,8 +2334,10 @@ void RcxController::switchToSavedSource(int idx) {
     if (idx == m_activeSourceIdx) return;
 
     // Save current source's base address before switching
-    if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size())
+    if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size()) {
         m_savedSources[m_activeSourceIdx].baseAddress = m_doc->tree.baseAddress;
+        m_savedSources[m_activeSourceIdx].baseAddressFormula = m_doc->tree.baseAddressFormula;
+    }
 
     m_activeSourceIdx = idx;
     const auto& entry = m_savedSources[idx];
@@ -2360,9 +2345,12 @@ void RcxController::switchToSavedSource(int idx) {
     if (entry.kind == QStringLiteral("File")) {
         m_doc->loadData(entry.filePath);
         m_doc->tree.baseAddress = entry.baseAddress;
+        m_doc->tree.baseAddressFormula = entry.baseAddressFormula;
         refresh();
     } else if (!entry.providerTarget.isEmpty()) {
         // Plugin-based provider (e.g. "processmemory" with target "pid:name")
+        // Restore formula before attach so it can be re-evaluated against the new provider
+        m_doc->tree.baseAddressFormula = entry.baseAddressFormula;
         attachViaPlugin(entry.kind, entry.providerTarget);
     }
 }

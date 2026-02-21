@@ -24,6 +24,7 @@ public:
     QString name() const override { return m_processName; }
     QString kind() const override { return QStringLiteral("LocalProcess"); }
     QString getSymbol(uint64_t addr) const override;
+    uint64_t symbolToAddress(const QString& name) const override;
 
     bool isLive() const override { return true; }
     uint64_t base() const override { return m_base; }

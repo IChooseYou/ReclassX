@@ -1,4 +1,5 @@
 #include "core.h"
+#include "addressparser.h"
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -664,43 +665,13 @@ QString validateValue(NodeKind kind, const QString& text) {
     return QStringLiteral("invalid");
 }
 
-// ── Base address validation (supports simple +/- equations) ──
+// ── Base address validation (delegates to AddressParser) ──
 
 QString validateBaseAddress(const QString& text) {
     QString s = text.trimmed();
     if (s.isEmpty()) return QStringLiteral("empty");
-
-    int pos = 0;
-    bool firstTerm = true;
-
-    while (pos < s.size()) {
-        // Skip whitespace
-        while (pos < s.size() && s[pos].isSpace()) pos++;
-        if (pos >= s.size()) break;
-
-        // Check for +/- operator (except first term)
-        if (!firstTerm) {
-            if (s[pos] == '+' || s[pos] == '-') pos++;
-            else return QStringLiteral("invalid '%1'").arg(s[pos]);
-            while (pos < s.size() && s[pos].isSpace()) pos++;
-        }
-
-        // Skip 0x prefix if present
-        if (pos + 1 < s.size() && s[pos] == '0' && (s[pos+1] == 'x' || s[pos+1] == 'X'))
-            pos += 2;
-
-        // Must have at least one hex digit
-        int numStart = pos;
-        while (pos < s.size() && (s[pos].isDigit() ||
-               (s[pos] >= 'a' && s[pos] <= 'f') ||
-               (s[pos] >= 'A' && s[pos] <= 'F'))) pos++;
-
-        if (pos == numStart) return QStringLiteral("invalid");
-
-        firstTerm = false;
-    }
-
-    return {};
+    //s.remove('`');
+    return AddressParser::validate(s);
 }
 
 } // namespace rcx::fmt

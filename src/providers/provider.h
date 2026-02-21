@@ -47,6 +47,13 @@ public:
         return {};
     }
 
+    // Resolve a module/symbol name to its address (reverse of getSymbol).
+    // Returns 0 if the name is not found.
+    virtual uint64_t symbolToAddress(const QString& name) const {
+        Q_UNUSED(name);
+        return 0;
+    }
+
     // --- Derived convenience (non-virtual, never override) ---
 
     bool isValid() const { return size() > 0; }

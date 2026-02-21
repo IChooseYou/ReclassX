@@ -67,6 +67,9 @@ public:
     QString getSymbol(uint64_t addr) const override {
         return m_real ? m_real->getSymbol(addr) : QString();
     }
+    uint64_t symbolToAddress(const QString& n) const override {
+        return m_real ? m_real->symbolToAddress(n) : 0;
+    }
 
     bool write(uint64_t addr, const void* buf, int len) override {
         if (!m_real) return false;

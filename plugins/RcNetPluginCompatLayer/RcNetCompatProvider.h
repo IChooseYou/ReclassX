@@ -28,6 +28,7 @@ public:
     bool     isLive() const override { return true; }
     uint64_t base() const override { return m_base; }
     QString  getSymbol(uint64_t addr) const override;
+    uint64_t symbolToAddress(const QString& name) const override;
 
     struct ModuleInfo {
         QString  name;

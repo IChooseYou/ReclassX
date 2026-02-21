@@ -73,6 +73,8 @@ add_executable(Reclass
     src/titlebar.cpp
     src/mcp/mcp_bridge.h
     src/mcp/mcp_bridge.cpp
+    src/addressparser.h
+    src/addressparser.cpp
     src/disasm.h
     src/disasm.cpp
     third_party/fadec/decode.c
@@ -154,17 +156,17 @@ if(BUILD_TESTING)
 
     # ── Headless tests (Qt::Core only — safe for CI without a display) ──
 
-    add_executable(test_core tests/test_core.cpp src/format.cpp src/compose.cpp)
+    add_executable(test_core tests/test_core.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_core PRIVATE src)
     target_link_libraries(test_core PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_core COMMAND test_core)
 
-    add_executable(test_format tests/test_format.cpp src/format.cpp)
+    add_executable(test_format tests/test_format.cpp src/format.cpp src/addressparser.cpp)
     target_include_directories(test_format PRIVATE src)
     target_link_libraries(test_format PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_format COMMAND test_format)
 
-    add_executable(test_compose tests/test_compose.cpp src/compose.cpp src/format.cpp)
+    add_executable(test_compose tests/test_compose.cpp src/compose.cpp src/format.cpp src/addressparser.cpp)
     target_include_directories(test_compose PRIVATE src)
     target_link_libraries(test_compose PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_compose COMMAND test_compose)
@@ -180,42 +182,47 @@ if(BUILD_TESTING)
     add_test(NAME test_command_row COMMAND test_command_row)
 
     add_executable(test_generator tests/test_generator.cpp
-        src/generator.cpp src/compose.cpp src/format.cpp)
+        src/generator.cpp src/compose.cpp src/format.cpp src/addressparser.cpp)
     target_include_directories(test_generator PRIVATE src)
     target_link_libraries(test_generator PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_generator COMMAND test_generator)
 
     add_executable(test_import_xml tests/test_import_xml.cpp
-        src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
+        src/import_reclass_xml.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_import_xml PRIVATE src)
     target_link_libraries(test_import_xml PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_import_xml COMMAND test_import_xml)
 
     add_executable(test_import_source tests/test_import_source.cpp
-        src/import_source.cpp src/format.cpp src/compose.cpp)
+        src/import_source.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_import_source PRIVATE src)
     target_link_libraries(test_import_source PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_import_source COMMAND test_import_source)
 
     add_executable(test_export_xml tests/test_export_xml.cpp
-        src/export_reclass_xml.cpp src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
+        src/export_reclass_xml.cpp src/import_reclass_xml.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_export_xml PRIVATE src)
     target_link_libraries(test_export_xml PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_export_xml COMMAND test_export_xml)
 
     add_executable(test_disasm tests/test_disasm.cpp
-        src/disasm.cpp src/compose.cpp src/format.cpp
+        src/disasm.cpp src/compose.cpp src/format.cpp src/addressparser.cpp
         third_party/fadec/decode.c third_party/fadec/format.c)
     target_include_directories(test_disasm PRIVATE src third_party/fadec)
     target_link_libraries(test_disasm PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_disasm COMMAND test_disasm)
+
+    add_executable(test_addressparser tests/test_addressparser.cpp src/addressparser.cpp)
+    target_include_directories(test_addressparser PRIVATE src)
+    target_link_libraries(test_addressparser PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_addressparser COMMAND test_addressparser)
 
     # ── UI tests (require Qt::Widgets / QScintilla / display — skip on headless CI) ──
     option(BUILD_UI_TESTS "Build tests that require a display (Qt Widgets)" ON)
     if(BUILD_UI_TESTS)
 
     add_executable(test_controller tests/test_controller.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
@@ -229,7 +236,7 @@ if(BUILD_TESTING)
     add_test(NAME test_controller COMMAND test_controller)
 
     add_executable(test_validation tests/test_validation.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
@@ -243,7 +250,7 @@ if(BUILD_TESTING)
     add_test(NAME test_validation COMMAND test_validation)
 
     add_executable(test_context_menu tests/test_context_menu.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
@@ -257,7 +264,7 @@ if(BUILD_TESTING)
     add_test(NAME test_context_menu COMMAND test_context_menu)
 
     add_executable(test_source_management tests/test_source_management.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
@@ -271,7 +278,7 @@ if(BUILD_TESTING)
     add_test(NAME test_source_management COMMAND test_source_management)
 
     add_executable(test_editor tests/test_editor.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp
         src/providerregistry.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
     target_include_directories(test_editor PRIVATE src third_party/fadec)
@@ -281,7 +288,7 @@ if(BUILD_TESTING)
     add_test(NAME test_editor COMMAND test_editor)
 
     add_executable(test_rendered_view tests/test_rendered_view.cpp
-        src/generator.cpp src/compose.cpp src/format.cpp)
+        src/generator.cpp src/compose.cpp src/format.cpp src/addressparser.cpp)
     target_include_directories(test_rendered_view PRIVATE src)
     target_link_libraries(test_rendered_view PRIVATE
         ${QT}::Widgets ${QT}::PrintSupport ${QT}::Test
@@ -289,7 +296,7 @@ if(BUILD_TESTING)
     add_test(NAME test_rendered_view COMMAND test_rendered_view)
 
     add_executable(test_new_features tests/test_new_features.cpp
-        src/generator.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/generator.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/editor.cpp src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
@@ -303,7 +310,7 @@ if(BUILD_TESTING)
     add_test(NAME test_new_features COMMAND test_new_features)
 
     add_executable(test_type_selector tests/test_type_selector.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
@@ -317,7 +324,7 @@ if(BUILD_TESTING)
     add_test(NAME test_type_selector COMMAND test_type_selector)
 
     add_executable(test_type_visibility tests/test_type_visibility.cpp
-        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
         src/typeselectorpopup.cpp
         src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})

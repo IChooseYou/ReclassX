@@ -11,3 +11,6 @@ build/
 *.suo
 .vs/
 CMakeUserPresets.json
+plugins/RcNetPluginCompatLayer/bridge/obj
+plugins/RcNetPluginCompatLayer/bridge/bin
+.cache

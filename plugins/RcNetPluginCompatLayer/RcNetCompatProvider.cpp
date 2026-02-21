@@ -74,6 +74,15 @@ QString RcNetCompatProvider::getSymbol(uint64_t addr) const
     return {};
 }
 
+uint64_t RcNetCompatProvider::symbolToAddress(const QString& name) const
+{
+    for (const auto& mod : m_modules) {
+        if (mod.name.compare(name, Qt::CaseInsensitive) == 0)
+            return mod.base;
+    }
+    return 0;
+}
+
 // -- Module enumeration ---------------------------------------------------
 
 namespace {

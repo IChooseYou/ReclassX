@@ -483,7 +483,7 @@ private slots:
         QVERIFY(!fmt::validateBaseAddress("").isEmpty());   // empty
         QVERIFY(!fmt::validateBaseAddress("  ").isEmpty()); // whitespace only - no hex digits
         QVERIFY(!fmt::validateBaseAddress("0xGGGG").isEmpty());
-        QVERIFY(!fmt::validateBaseAddress("0x1000 * 2").isEmpty());  // multiplication not supported
+        QVERIFY(fmt::validateBaseAddress("0x1000 * 2").isEmpty());   // multiplication supported
         QVERIFY(!fmt::validateBaseAddress("0x1000 ++ 0x100").isEmpty());  // double operator
         QVERIFY(!fmt::validateBaseAddress("hello").isEmpty());
     }
@@ -1028,7 +1028,7 @@ private slots:
 
         // Test the validation function directly
         QVERIFY(!fmt::validateBaseAddress("0x1000 ** 2").isEmpty());
-        QVERIFY(!fmt::validateBaseAddress("0x1000 / 2").isEmpty());
+        QVERIFY(fmt::validateBaseAddress("0x1000 / 2").isEmpty());  // division supported
         QVERIFY(!fmt::validateBaseAddress("abc xyz").isEmpty());
 
         // Original base should be unchanged

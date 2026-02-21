@@ -70,6 +70,7 @@ struct SavedSourceEntry {
     QString filePath;      // for File sources
     QString providerTarget; // for plugin providers (e.g. "pid:name")
     uint64_t baseAddress = 0;
+    QString baseAddressFormula;
 };
 
 // ── Controller ──
